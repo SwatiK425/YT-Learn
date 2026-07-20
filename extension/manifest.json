@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "YT-Learn: Learn by Doing",
+  "version": "0.1.0",
+  "description": "Get a 5-minute micro-experiment from any YouTube video — personalised to your goal, applied to your project.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://localhost:8002/*",
+    "https://www.youtube.com/*",
+    "https://youtube.com/*"
+  ],
+  "action": {
+    "default_title": "YT-Learn",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*", "*://youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup/*", "icons/*"],
+      "matches": ["*://www.youtube.com/*"]
+    }
+  ],
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}
