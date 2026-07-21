@@ -44,8 +44,6 @@ BASE_URL = os.getenv("OPENAI_BASE_URL", "https://generativelanguage.googleapis.c
 
 CACHE_TTL = 86400  # 24 hours
 GEN_TIMEOUT = 60   # fail fast; a hung call should never cost minutes
-# ~45k tokens. Covers roughly a 3-hour video. Above this we compress first.
-MAX_SINGLE_PASS_CHARS = 180_000
 
 # Provider presets: name → OpenAI-compatible base URL. The extension sends a
 # provider + model + api_key per request (BYOK); env vars are the fallback
@@ -84,15 +82,16 @@ class ResolvedLLM:
 
 def resolve_llm(cfg: LLMConfig | None) -> ResolvedLLM:
     """Turn optional per-request config into (client, model, fast_model).
-    Falls back to server env defaults when config is absent/incomplete."""
-    if cfg and cfg.api_key and cfg.model:
-        base = cfg.base_url or PROVIDER_BASE_URLS.get(cfg.provider, "")
-        if not base:
-            raise HTTPException(400, "Unknown provider and no base_url given.")
-        client = OpenAI(api_key=cfg.api_key, base_url=base)
-        return ResolvedLLM(client, cfg.model, cfg.fast_model or cfg.model)
+    BYOK disabled — always uses server env defaults."""
+    # BYOK commented out: always use server .env defaults
+    # if cfg and cfg.api_key and cfg.model:
+    #     base = cfg.base_url or PROVIDER_BASE_URLS.get(cfg.provider, "")
+    #     if not base:
+    #         raise HTTPException(400, "Unknown provider and no base_url given.")
+    #     client = OpenAI(api_key=cfg.api_key, base_url=base)
+    #     return ResolvedLLM(client, cfg.model, cfg.fast_model or cfg.model)
     if not API_KEY:
-        raise HTTPException(400, "No API key configured. Add one in the extension's model settings.")
+        raise HTTPException(400, "No API key configured in .env")
     return ResolvedLLM(get_default_client(), MODEL, FAST_MODEL)
 
 # ─── In-memory stores ─────────────────────────────────────
@@ -124,15 +123,18 @@ class SuggestRequest(BaseModel):
 
 class SuggestResponse(BaseModel):
     experiment_id: str
-    principle: str = ""  # backward compat: maps from top_concept or eighty_twenty
+    principle: str = ""  # backward compat: maps from chosen_insight
     experiment: str
     why_it_matters: str = ""
-    candidates: list[dict] = []  # backward compat: maps from concepts
-    video_class: dict = {"type": "other", "domain": ""}
-    top_concept: str = ""
+    candidates: list[dict] = []  # backward compat: maps from five_insights
+    # New pipeline fields
+    main_problem: str = ""
     creator_thesis: str = ""
-    eighty_twenty: str = ""
-    concepts: list[dict] = []
+    chosen_insight: str = ""
+    importance_score: int = 0
+    done_criteria: str = ""
+    five_insights: list[dict] = []
+    selection_reasoning: dict = {}
     cached: bool = False
 
 class FeedbackRequest(BaseModel):
@@ -204,156 +206,185 @@ def parse_json_lenient(content: str) -> dict | None:
                 return None
     return None
 
-# ─── Prompts ──────────────────────────────────────────────
+# ─── Pipeline Prompts ──────────────────────────────────────
 
-SYSTEM_TEMPLATE = """You are a master tutor who teaches through application, not explanation.
+ANALYSIS_SYSTEM = """You are an expert teacher analyzing a video transcript.
 
-Your job: identify the single highest-leverage concept from the video transcript below and force the learner to apply it right now. Do NOT "generate an exercise" — identify what matters most and make them use it.
+Read the transcript and identify:
+1. Main problem being solved
+2. Creator's thesis (the single main argument)
+3. Three to five key insights (each with evidence from the transcript)
+4. The ONE insight that matters most — the 80/20: the single idea that creates the biggest change in someone's ability after watching this video
 
-Work through these steps IN ORDER. Keep your reasoning internal — output only the final JSON.
-
-## Steps
-
-1. **Classify** — What type of content is this? (tutorial, case study, theoretical talk, debate, documentary, review, or other) What field or domain?
-
-2. **Extract all concepts** — List every distinct concept, technique, system, example, framework, method, or principle mentioned in the transcript. Scan beginning, middle, end. Be exhaustive — don't skip anything.
-
-3. **Rank by leverage** — Rank concepts from highest intellectual leverage to lowest. The highest-leverage concept is the one that, if understood and applied, produces the most outsized result.
-
-4. **Creator's thesis** — What is the single main argument or point the creator is making? What do they want the viewer to understand or do?
-
-5. **80/20 insight** — What is the 20% of this video that yields 80% of the value? The core insight worth extracting from this video.
-
-6. **Design exercise** — Design ONE concrete exercise that forces the learner to apply the 80/20 insight immediately. Rules:
-   - Takes ≤5 minutes
-   - Produces a real artifact or observable outcome (never "think about" or "reflect on")
-   - Doable right now in the learner's browser or immediate work context
-   - Has a clear "done" state the learner can recognize
-   - Write as 3-5 short numbered steps, each starting with an action verb
-   - Simple, direct language. No fluff, no marketing tone.
-
-7. **Adjust difficulty** — (Applied automatically from the Difficulty note in the prompt below.)
-
-Output format — respond ONLY with valid JSON, no extra text:
+Return ONLY valid JSON — no extra text:
 {
-  "video_class": {
-    "type": "tutorial|case_study|theoretical|talk|debate|documentary|review|other",
-    "domain": "the specific field or domain"
-  },
-  "concepts": [
-    {"name": "concept name", "where": "early|middle|late"},
-    ...
+  "main_problem": "description of the core problem being addressed",
+  "creator_thesis": "the single main argument the creator is making",
+  "insights": [
+    {"insight": "insight text", "evidence": "supporting evidence from transcript"}
   ],
-  "top_concept": "The single highest-leverage concept (1-2 sentences)",
-  "creator_thesis": "The creator's main argument (1-2 sentences)",
-  "eighty_twenty": "The 80/20 insight (1-2 sentences)",
-  "experiment": "Numbered steps, newline-separated",
-  "why_it_matters": "One sentence connecting this to real-world application"
+  "pareto_insight": "the single insight that matters most (80/20)",
+  "pareto_why": "why this one insight matters more than the others (2-3 sentences)"
 }"""
 
+EXERCISE_SYSTEM = """You are a world-class mentor. The learner just watched a video.
 
-def build_prompt(transcript: str, retry_reason: str | None) -> str:
-    retry_note = ""
-    if retry_reason == "too_easy":
-        retry_note = "\n[DIFFICULTY] Their last exercise was TOO EASY. Make this one significantly more demanding.\n"
-    elif retry_reason == "too_hard":
-        retry_note = "\n[DIFFICULTY] Their last exercise was TOO HARD. Simplify and break it down further.\n"
-    elif retry_reason == "wrong_topic":
-        retry_note = "\n[DIFFICULTY] Their last exercise targeted the WRONG TOPIC. Pick a different concept.\n"
+The single most important insight is:
 
-    return (
-        f"## Full Transcript\n{transcript}\n\n"
-        f"{retry_note}"
-        f"Work through the steps. Return ONLY the JSON object."
+{insight}
+
+What would a world-class mentor stop the learner and insist they practice before continuing the video?
+
+BAD EXERCISES (never do these):
+- Reflect on your day...
+- Think about how you feel...
+- Imagine a scenario where...
+- Consider what would happen if...
+- Understand the concept of...
+
+GOOD EXAMPLES (use this style):
+1. Open your last product idea. Write down 10 assumptions. Call out the riskiest one. Find one person today who can validate it.
+2. Draft a one-paragraph counter-argument to your own position. Then interview someone who disagrees. Rewrite it based on what you learned.
+3. Draw a quick diagram of the system. Label every interaction point. Modify one label to reduce friction.
+
+Your exercise MUST:
+- Take ≤5 minutes
+- Produce a real artifact or observable outcome
+- Be doable right now in the learner's browser or work context
+- Have a clear "done" state
+- Start with Build, Write, Draw, Modify, Prototype, Measure, Interview, Ship, Open, Find, List, Draft, Create, Design, or Code
+
+Return ONLY valid JSON — no extra text:
+{{
+  "experiment": "Numbered steps (3-5), each starting with an action verb, newline-separated",
+  "done_criteria": "What counts as done (1 sentence, clear and measurable)",
+  "why_it_matters": "One sentence connecting this to real-world application"
+}}"""
+
+
+# ─── Pipeline Functions ────────────────────────────────────
+
+FORBIDDEN_WORDS = {"reflect", "think about ", "imagine ", "consider ", "understand "}
+ACCEPTED_VERBS = {
+    "build", "interview", "write", "draw", "modify", "prototype", "measure", "ship",
+    "open", "find", "list", "call", "draft", "create", "design", "code", "test",
+    "record", "map", "sketch", "diagram", "collect", "identify", "define", "prepare",
+}
+
+
+async def _llm_call(
+    llm: ResolvedLLM,
+    system: str,
+    user: str,
+    temp: float,
+    max_tokens: int = 2000,
+) -> str:
+    """Call LLM with system + user messages at given temperature."""
+    messages = [{"role": "system", "content": system}]
+    if user:
+        messages.append({"role": "user", "content": user})
+    resp = await asyncio.to_thread(
+        llm.client.chat.completions.create,
+        model=llm.model,
+        messages=messages,
+        temperature=temp,
+        max_tokens=max_tokens,
+        timeout=120,
     )
+    text = resp.choices[0].message.content.strip()
+    # Strip markdown fences
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        text = text.rsplit("```", 1)[0].strip()
+    return text
 
 
-# ─── Long-video compression (rare path, >~3h of video) ────
+def critic_exercise(experiment_text: str) -> dict:
+    """Check exercise requires producing something real."""
+    lower = experiment_text.lower()
 
-async def compress_transcript(transcript: str, llm: ResolvedLLM) -> str:
-    """Parallel dense notes over large windows, preserving order. Only used
-    when the transcript exceeds single-pass budget."""
-    window = 40_000
-    windows = [transcript[i:i + window] for i in range(0, len(transcript), window)]
-    sem = asyncio.Semaphore(8)
+    for word in FORBIDDEN_WORDS:
+        if word in lower:
+            return {"pass": False, "reason": f"Exercise contains '{word.strip()}' — must produce something real"}
 
-    async def notes(idx: int, text: str) -> tuple[int, str]:
-        prompt = (
-            "Write dense notes on this video-transcript section: every distinct concept, "
-            "technique, example, and concrete detail, in order. No commentary. Max 400 words.\n\n"
-            + text
-        )
-        async with sem:
-            try:
-                resp = await asyncio.to_thread(
-                    llm.client.chat.completions.create,
-                    model=llm.fast_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2, max_tokens=700, timeout=30,
-                )
-                return idx, (resp.choices[0].message.content or "")
-            except Exception as e:
-                print(f"  notes window {idx} failed: {e}")
-                return idx, ""
+    first_line = experiment_text.strip().split("\n")[0] if experiment_text else ""
+    import re as _re
+    first_word = _re.sub(r"^\s*\d+[\.\)]\s*", "", first_line).split()[0].lower() if first_line else ""
+    if first_word and first_word not in ACCEPTED_VERBS:
+        return {"pass": False, "reason": f"First step must start with an action verb. Got: '{first_word}'"}
 
-    results = await asyncio.gather(*[notes(i, w) for i, w in enumerate(windows)])
-    results.sort(key=lambda r: r[0])
-    frac = 100 // max(len(windows), 1)
-    parts = [f"[Section {i + 1} of {len(windows)}, ~{i * frac}-{(i + 1) * frac}% through the video]\n{txt}"
-             for i, txt in results if txt]
-    return "\n\n".join(parts)
+    return {"pass": True, "reason": ""}
 
 
-# ─── Core generation ──────────────────────────────────────
+# ─── Pipeline Orchestrator (2 stages) ──────────────────────
 
-async def prepare_transcript(transcript: str, llm: ResolvedLLM) -> str:
-    if len(transcript) > MAX_SINGLE_PASS_CHARS:
-        print(f"[COMPRESS] {len(transcript)} chars → notes")
-        return await compress_transcript(transcript, llm)
-    return transcript
+async def generate_experiment(
+    transcript: str,
+    retry_reason: str | None,
+    llm: ResolvedLLM,
+) -> dict:
+    """2-stage pipeline: understand → exercise.
 
-def _validate(parsed: dict) -> dict:
-    if not parsed.get("experiment"):
-        raise ValueError("Model output missing required field: experiment")
-    parsed.setdefault("video_class", {"type": "other", "domain": ""})
-    parsed.setdefault("concepts", [])
-    parsed.setdefault("top_concept", "")
-    parsed.setdefault("creator_thesis", "")
-    parsed.setdefault("eighty_twenty", "")
-    parsed.setdefault("why_it_matters", "")
-    # Backward compat: map new fields to old field names the extension expects
-    parsed.setdefault("principle", parsed["top_concept"] or parsed["eighty_twenty"])
-    parsed.setdefault("candidates", parsed["concepts"])
-    return parsed
+    Stage 1 (temp=0.2): Extract thesis, insights, pareto insight.
+    Stage 2 (temp=0.7): Create exercise from pareto insight only. No transcript.
+    """
+    # Stage 1: Video understanding — deterministic, low temp
+    capped = transcript[:80000]
+    analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 2000)
+    analysis = parse_json_lenient(analysis_text)
+    if not analysis or not analysis.get("insights"):
+        raise ValueError(f"Analysis step failed: {analysis_text[:200]}")
 
-async def generate_experiment(transcript: str,
-                              retry_reason: str | None, llm: ResolvedLLM) -> dict:
-    """Single call, full transcript, one retry on malformed JSON. Never
-    fabricates a fallback exercise — bad output fails loudly."""
-    prompt = build_prompt(transcript, retry_reason)
-    messages = [
-        {"role": "system", "content": SYSTEM_TEMPLATE},
-        {"role": "user", "content": prompt},
-    ]
+    # Stage 2: Exercise from pareto insight only — creative, higher temp
+    pareto = analysis.get("pareto_insight", analysis["insights"][0]["insight"])
+    evidence = analysis.get("pareto_why", "")
+
+    difficulty_note = ""
+    if retry_reason == "too_easy":
+        difficulty_note = "DIFFICULTY: Their last exercise was TOO EASY. Make this significantly more demanding."
+    elif retry_reason == "too_hard":
+        difficulty_note = "DIFFICULTY: Their last exercise was TOO HARD. Simplify and break it down further."
+
+    system = EXERCISE_SYSTEM.format(insight=pareto)
+    user = f"Selected insight: {pareto}\nWhy it matters: {evidence}\n\n{difficulty_note}" if difficulty_note else f"Selected insight: {pareto}\nWhy it matters: {evidence}"
+
     last_err = None
     for attempt in range(2):
-        try:
-            resp = await asyncio.to_thread(
-                llm.client.chat.completions.create,
-                model=llm.model, messages=messages,
-                temperature=0.7 if attempt == 0 else 0.4,
-                max_tokens=4096, timeout=GEN_TIMEOUT,
-            )
-            content = resp.choices[0].message.content or ""
-            parsed = parse_json_lenient(content)
-            if parsed:
-                return _validate(parsed)
-            last_err = ValueError(f"Unparseable model output ({len(content)} chars)")
-            print(f"  attempt {attempt}: unparseable, retrying")
-        except Exception as e:
-            last_err = e
-            print(f"  attempt {attempt} failed: {e}")
-    raise last_err or ValueError("Generation failed")
+        text = await _llm_call(llm, system, user, 0.7, 1500)
+        parsed = parse_json_lenient(text)
+        if not parsed or not parsed.get("experiment"):
+            last_err = f"Unparseable exercise ({len(text)} chars)"
+            print(f"  exercise attempt {attempt}: unparseable")
+            continue
+
+        verdict = critic_exercise(parsed["experiment"])
+        if verdict["pass"]:
+            parsed.setdefault("done_criteria", "")
+            parsed.setdefault("why_it_matters", "")
+            parsed.setdefault("principle", pareto)
+            # Compose full result
+            result = {
+                "principle": pareto,
+                "experiment": parsed["experiment"],
+                "why_it_matters": parsed.get("why_it_matters", ""),
+                "candidates": analysis.get("insights", []),
+                "main_problem": analysis.get("main_problem", ""),
+                "creator_thesis": analysis.get("creator_thesis", ""),
+                "chosen_insight": pareto,
+                "importance_score": 0,
+                "done_criteria": parsed.get("done_criteria", ""),
+                "five_insights": analysis.get("insights", []),
+                "selection_reasoning": {"why_best": analysis.get("pareto_why", ""), "why_others_less_important": []},
+            }
+            print(f"  [PIPELINE] {len(analysis.get('insights', []))} insights → pareto → exercise ({len(parsed['experiment'])} chars)")
+            return result
+
+        print(f"  exercise attempt {attempt}: critic rejected — {verdict['reason']}")
+        last_err = verdict["reason"]
+        user += f"\n\nFEEDBACK FROM CRITIC: {verdict['reason']} Rewrite the exercise."
+
+    raise ValueError(f"Exercise generation failed: {last_err}")
+
 
 
 
@@ -407,7 +438,7 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
             return SuggestResponse(**entry["result"], cached=True)
 
     prepared = (
-        prepared_transcripts.get(vid) or await prepare_transcript(transcript, llm)
+        prepared_transcripts.get(vid) or transcript
     )
     if vid not in prepared_transcripts:
         prepared_transcripts[vid] = prepared
@@ -430,9 +461,8 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
 async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
     """Events:
       skeleton — emitted IMMEDIATELY, before any model work
-      status   — progress notes (e.g. long-video compression)
-      raw      — incremental model tokens (client may show live preview)
-      done     — server-parsed final result: experiment_id + all fields
+      status   — progress notes (e.g. compressing, analyzing)
+      done     — final result: experiment_id + all fields
       error    — message
     """
     vid = extract_video_id(req.video_url)
@@ -468,43 +498,12 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
                 return
 
         try:
-            # Re-use prepared (compressed) transcript from a prior request
-            if vid in prepared_transcripts:
-                prepared = prepared_transcripts[vid]
-            else:
-                if len(transcript) > MAX_SINGLE_PASS_CHARS:
-                    yield f"event: status\ndata: {json.dumps({'message': 'Long video — reading it in sections...'})}\n\n"
-                prepared = await prepare_transcript(transcript, llm)
-                prepared_transcripts[vid] = prepared
+            # The new pipeline handles its own compression internally.
+            # Just pass the raw transcript — hierarchical compression is now
+            # always the first step (not a separate conditional path).
+            yield f"event: status\ndata: {json.dumps({'message': 'Analyzing video...'})}\n\n"
 
-            prompt = build_prompt(prepared, req.retry_reason)
-
-            # 3. Stream the single generation call.
-            resp = await asyncio.to_thread(
-                llm.client.chat.completions.create,
-                model=llm.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_TEMPLATE},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.7, max_tokens=4096, timeout=GEN_TIMEOUT,
-                stream=True,
-            )
-
-            buf = ""
-            for chunk in resp:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                content = (delta.content or "") if delta else ""
-                if content:
-                    buf += content
-                    yield f"event: raw\ndata: {json.dumps({'text': content})}\n\n"
-
-            # 4. Server parses & validates — the client never has to regex JSON.
-            parsed = parse_json_lenient(buf)
-            if not parsed:
-                yield f"event: error\ndata: {json.dumps({'message': 'Model returned malformed output. Try again.'})}\n\n"
-                return
-            result = _validate(parsed)
+            result = await generate_experiment(transcript, req.retry_reason, llm)
 
             exp_id = str(uuid.uuid4())[:12]
             response_data = {"experiment_id": exp_id, **result}

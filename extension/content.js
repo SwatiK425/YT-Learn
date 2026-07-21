@@ -14,7 +14,7 @@ var pendingRetryReason = null;
 // so they never go stale.
 var PROVIDERS = {
   google:     { label: 'Google AI',    needsBase: false, models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.1-flash', 'gemini-3.1-pro'], fast: 'gemini-2.5-flash' },
-  anthropic:  { label: 'Anthropic',    needsBase: false, models: ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5-20251001'], fast: 'claude-haiku-4-5-20251001' },
+  anthropic:  { label: 'Anthropic',    needsBase: false, models: ['claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-fable-5'], fast: 'claude-sonnet-5' },
   openai:     { label: 'OpenAI',       needsBase: false, models: ['gpt-4o', 'gpt-4o-mini'], fast: 'gpt-4o-mini' },
   openrouter: { label: 'OpenRouter',   needsBase: false, models: ['anthropic/claude-sonnet-4-6', 'deepseek/deepseek-chat', 'google/gemini-2.5-flash'], fast: '' },
   'opencode-zen': { label: 'OpenCode Zen', needsBase: false, models: ['deepseek-v4-flash-free', 'hy3-free', 'north-mini-code-free', 'nemotron-3-ultra-free'], fast: 'hy3-free' },
