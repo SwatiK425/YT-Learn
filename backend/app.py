@@ -56,6 +56,48 @@ PROVIDER_BASE_URLS = {
     "opencode-zen": "https://opencode.ai/zen/v1",
 }
 
+# ─── Prompt log file ───────────────────────────────
+_PROMPT_LOG = os.path.join(os.path.dirname(__file__), "prompts.log")
+_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _log_prompt(llm, system: str, user: str, temp: float, max_tokens: int, response_text: str = ""):
+    """Append a structured prompt log entry to the log file."""
+    now = datetime.now(timezone.utc)
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    elapsed_ms = int((now - _EPOCH).total_seconds() * 1000)
+
+    header = (
+        f"════════════════════════════════════════════════════\n"
+        f"[{timestamp}] LLM PROMPT\n"
+        f"  Model: {llm.model} | temp={temp} | max_tokens={max_tokens}\n"
+        f"\n"
+        f"── SYSTEM ({len(system)} chars) ──\n"
+        f"{system}\n"
+        f"\n"
+        f"── USER ({len(user) if user else 0} chars) ──\n"
+        f"{user if user else '(none)'}\n"
+        f"\n"
+    )
+
+    if response_text:
+        resp_trunc = response_text[:2000]
+        header += (
+            f"── RESPONSE ({len(response_text)} chars, first {len(resp_trunc)}) ──\n"
+            f"{resp_trunc}\n"
+        )
+
+    header += f"════════════════════════════════════════════════════\n\n"
+
+    try:
+        with open(_PROMPT_LOG, "a", encoding="utf-8") as f:
+            f.write(header)
+    except Exception:
+        pass  # Don't crash on write failure
+
+    # Still print a brief summary to the terminal
+    print(f"  [LLM] {llm.model} | temp={temp} | max_tokens={max_tokens} | system={len(system)}c | user={len(user) if user else 0}c", flush=True)
+
 _client: OpenAI | None = None
 
 def get_default_client() -> OpenAI:
@@ -252,7 +294,7 @@ Your exercise MUST:
 - Produce a real artifact or observable outcome
 - Be doable right now in the learner's browser or work context
 - Have a clear "done" state
-- Start with Build, Write, Draw, Modify, Prototype, Measure, Interview, Ship, Open, Find, List, Draft, Create, Design, or Code
+- Start with "Call"
 
 Return ONLY valid JSON — no extra text:
 {{
@@ -283,6 +325,10 @@ async def _llm_call(
     messages = [{"role": "system", "content": system}]
     if user:
         messages.append({"role": "user", "content": user})
+
+    # ── Log the actual prompt to file + brief terminal summary ──
+    _log_prompt(llm, system, user, temp, max_tokens)
+
     resp = await asyncio.to_thread(
         llm.client.chat.completions.create,
         model=llm.model,
@@ -330,7 +376,7 @@ async def generate_experiment(
     """
     # Stage 1: Video understanding — deterministic, low temp
     capped = transcript[:80000]
-    analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 2000)
+    analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 100000)
     analysis = parse_json_lenient(analysis_text)
     if not analysis or not analysis.get("insights"):
         raise ValueError(f"Analysis step failed: {analysis_text[:200]}")
@@ -350,7 +396,7 @@ async def generate_experiment(
 
     last_err = None
     for attempt in range(2):
-        text = await _llm_call(llm, system, user, 0.7, 1500)
+        text = await _llm_call(llm, system, user, 0.7, 100000)
         parsed = parse_json_lenient(text)
         if not parsed or not parsed.get("experiment"):
             last_err = f"Unparseable exercise ({len(text)} chars)"
