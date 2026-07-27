@@ -145,42 +145,23 @@ function openOverlay() {
   showHomeView();
 }
 
-// Route to profile setup or exercise view based on stored profile.
+// Route straight to exercise view. Profile is auto-created on first run.
 function showHomeView() {
   var videoUrl = window.location.href;
   chrome.storage.local.get('yl_profile', function(data) {
     var profile = data.yl_profile;
-    if (profile) showExperimentView(profile.user_id, profile, videoUrl);
-    else showProfileView();
+    if (!profile) {
+      // First visit — auto-create a userId silently
+      profile = { user_id: 'u_' + Date.now(), role: '', goal: '' };
+      chrome.storage.local.set({ yl_profile: profile });
+    }
+    showExperimentView(profile.user_id, videoUrl);
   });
 }
 
 function closeOverlay() { if (overlay) { overlay.remove(); overlay = null; } }
 
-// ─── Profile View (first-run) — 2 questions only ────────
-function showProfileView() {
-  const views = document.getElementById('yt-learn-views');
-  if (!views) return;
-  views.innerHTML = `
-    <div class="yt-learn-step">Welcome to YT-Learn</div>
-    <p class="yt-learn-sub">Two quick questions so every exercise is relevant to you.</p>
-    <label style="font-size:13px;color:#888;display:block;margin-top:12px;">What's your role?</label>
-    <input id="yl-role" class="yl-input" placeholder="e.g. PM, designer, founder..." />
-    <label style="font-size:13px;color:#888;display:block;margin-top:10px;">What are you trying to be better at?</label>
-    <input id="yl-goal-setup" class="yl-input" placeholder="e.g. product strategy, coding, design..." />
-    <button id="yl-save" class="yl-btn yl-btn-primary" style="margin-top:16px;">Save & Start</button>
-  `;
-  document.getElementById('yl-save').addEventListener('click', function() {
-    var role = document.getElementById('yl-role').value.trim();
-    var goal = document.getElementById('yl-goal-setup').value.trim();
-    if (!role || !goal) { showStatus('Please fill in both fields.', true); return; }
-    var userId = 'u_' + Date.now();
-    var profile = { user_id: userId, role: role, goal: goal };
-    chrome.storage.local.set({ yl_profile: profile }, function() {
-      showExperimentView(userId, profile, window.location.href);
-    });
-  });
-}
+// ─── Profile View (REMOVED — was role + goal onboarding, no longer needed) ───────
 
 // ─── Model Settings View (BYOK) ─────────────────────────
 function showModelSettingsView() {
@@ -285,18 +266,20 @@ function parseSteps(text) {
   return steps.slice(0, 6);
 }
 
-function showExperimentView(userId, profile, videoUrl) {
+function showExperimentView(userId, videoUrl) {
   if (!videoUrl) videoUrl = window.location.href;
   const views = document.getElementById('yt-learn-views');
   if (!views) return;
 
   views.innerHTML = `
-    <label class="yl-goal-label">Is this why you're interested in this video?</label>
-    <input id="yl-goal" class="yl-input" placeholder="Loading..." />
+    <!-- API key input (coming soon - uncomment when ready)
+    <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Your API key</label>
+    <input id="yl-api-key-self" class="yl-input" type="password" placeholder="sk-..." autocomplete="off" />
+    -->
 
     <div id="yl-status" class="yl-status hidden"></div>
 
-    <button id="yl-generate" class="yl-btn yl-btn-primary">Generate</button>
+    <button id="yl-generate" class="yl-btn yl-btn-primary hidden" style="display:none;">↻ Try Again</button>
 
     <div id="yl-result" class="hidden">
       <!-- Skeleton (shown during streaming) -->
@@ -355,7 +338,6 @@ function showExperimentView(userId, profile, videoUrl) {
   let currentExpId = null;
   let likedState = null;
   let generateCount = 0;
-  var goalSetByUser = false;
 
   // ─── Check cache first ────────────────────────────────
   loadCachedExercise(videoUrl, userId).then(function(cached) {
@@ -363,12 +345,13 @@ function showExperimentView(userId, profile, videoUrl) {
       renderExerciseFromCache(cached, userId, videoUrl);
       generateCount = 1;
       currentExpId = cached.experiment_id;
+      document.getElementById('yl-generate').classList.remove('hidden');
       document.getElementById('yl-generate').textContent = '↻ Try Again';
-      if (cached.goal) document.getElementById('yl-goal').value = cached.goal;
       console.log('[YT-Learn] rendered from cache');
       return;
     }
-    startGoalAutoFill(profile);
+    // No cache — auto-generate immediately
+    performGenerate(videoUrl, userId, currentExpId);
   });
 
   // ─── Generate / Try Again button ──────────────────────
@@ -384,7 +367,7 @@ function showExperimentView(userId, profile, videoUrl) {
             retryRow.classList.add('hidden');
             document.getElementById('yl-generate').disabled = false;
             document.getElementById('yl-generate').textContent = '↻ Try Again';
-            performGenerate(videoUrl, userId, profile, currentExpId);
+            performGenerate(videoUrl, userId, currentExpId);
           }
         }, 4000);
         retryRow._timeoutId = timeoutId;
@@ -392,18 +375,7 @@ function showExperimentView(userId, profile, videoUrl) {
       }
       return;
     }
-    goalSetByUser = true;
-    performGenerate(videoUrl, userId, profile, null);
-  });
-
-  // ─── Goal input ──
-  document.getElementById('yl-goal').addEventListener('keydown', function(e) {
-    goalSetByUser = true;
-    this.dataset.userSet = 'true';  // stop autofill from overwriting user input
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      document.getElementById('yl-generate').click();
-    }
+    performGenerate(videoUrl, userId, null);
   });
 
   // ─── Feedback ──
@@ -442,7 +414,6 @@ function renderExerciseFromCache(cached, userId, videoUrl) {
   wireRetryPills(userId, currentExpId, videoUrl);
   generateCount = 1;
   document.getElementById('yl-generate').textContent = '↻ Try Again';
-  document.getElementById('yl-goal').style.display = 'none';
 }
 
 // ─── Streaming JSON parser ────────────────────────────────
@@ -496,10 +467,7 @@ async function readSSEStream(resp, handlers) {
 }
 
 // ─── Generate logic (streaming-first, with skeleton) ─────
-async function performGenerate(videoUrl, userId, profile, currentExpId) {
-  // Never block generation on the goal — backend has a sensible default.
-  var goal = (document.getElementById('yl-goal').value || '').trim();
-
+async function performGenerate(videoUrl, userId, currentExpId) {
   if (currentExpId) {
     fetch(BACKEND + '/api/signal', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -523,7 +491,7 @@ async function performGenerate(videoUrl, userId, profile, currentExpId) {
   try {
     const transcript = await getTranscript(videoUrl, { allowClick: true });
     const llmCfg = await getLLMConfig();
-    const body = { video_url: videoUrl, goal_override: goal || undefined };
+    const body = { video_url: videoUrl };
     if (transcript) body.transcript = transcript;
     if (llmCfg) body.llm = llmCfg;
     if (currentExpId) body.force = true; // Try Again must bypass cache
@@ -589,7 +557,6 @@ async function performGenerate(videoUrl, userId, profile, currentExpId) {
       wireDifficultyButtons(userId, expId);
       wireRetryPills(userId, expId, videoUrl);
 
-      document.getElementById('yl-goal').style.display = 'none';
       skelEl.classList.add('hidden');
       contentEl.classList.remove('hidden');
 
@@ -598,11 +565,11 @@ async function performGenerate(videoUrl, userId, profile, currentExpId) {
         principle: donePayload.principle || '',
         experiment: donePayload.experiment || '',
         why_it_matters: donePayload.why_it_matters || '',
-        goal: goal,
       });
 
       hideStatus();
       setLoading(false);
+      document.getElementById('yl-generate').classList.remove('hidden');
       return;
     }
 
@@ -630,7 +597,6 @@ async function performGenerate(videoUrl, userId, profile, currentExpId) {
     wireCheckboxes(userId, expId);
     wireDifficultyButtons(userId, expId);
     wireRetryPills(userId, expId, videoUrl);
-    document.getElementById('yl-goal').style.display = 'none';
     skelEl.classList.add('hidden');
     contentEl.classList.remove('hidden');
 
@@ -639,9 +605,9 @@ async function performGenerate(videoUrl, userId, profile, currentExpId) {
       principle: data.principle,
       experiment: data.experiment,
       why_it_matters: data.why_it_matters || '',
-      goal: goal,
     });
 
+    document.getElementById('yl-generate').classList.remove('hidden');
     hideStatus();
   } catch (err) {
     showStatus('Server unreachable. Is the backend running?', true);
@@ -721,81 +687,7 @@ function wireRetryPills(userId, expId, videoUrl) {
   });
 }
 
-// ─── Goal auto-fill (used when no cache) ─────────────────
-
-var GOAL_PREFIX = 'yl_goal_';
-
-function fetchInferredGoal(profile, videoId) {
-  var title = '';
-  var h1 = document.querySelector('h1 yt-formatted-string.ytd-video-primary-info-renderer');
-  if (h1) title = h1.textContent.trim();
-  if (!title) title = document.title.replace(' - YouTube', '').trim();
-  var channel = '';
-  var chEl = document.querySelector('#owner ytd-channel-name yt-formatted-string a');
-  if (chEl) channel = chEl.textContent.trim();
-  var desc = '';
-  var descEl = document.querySelector('#description yt-formatted-string, #description-inline-expander');
-  if (descEl) desc = descEl.textContent.trim().slice(0, 500);
-  var profile_data = profile || {};
-  return getLLMConfig().then(function(llmCfg) {
-    var body = {
-      video_title: title, video_channel: channel, video_description: desc,
-      role: profile_data.role || '', goal: profile_data.goal || ''
-    };
-    if (llmCfg) body.llm = llmCfg;
-    return fetch(BACKEND + '/api/infer-goal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-  })
-  .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-  .then(function(data) {
-    var g = data.goal && data.goal.length > 10 && data.goal.length < 200 ? data.goal : null;
-    if (g && videoId) {
-      chrome.storage.local.set({ [GOAL_PREFIX + videoId]: { goal: g, ts: Date.now() } });
-    }
-    return g;
-  })
-  .catch(function() { return null; });
-}
-
-// Warm the goal cache at page load — by the time the overlay opens, the
-// inferred goal is already sitting in storage.
-function prefetchGoal() {
-  var videoId = extractVideoId(window.location.href);
-  if (!videoId) return;
-  chrome.storage.local.get([GOAL_PREFIX + videoId, 'yl_profile'], function(d) {
-    var cached = d[GOAL_PREFIX + videoId];
-    if (cached && Date.now() - cached.ts < 86400000) return; // already warm
-    fetchInferredGoal(d.yl_profile || null, videoId);
-  });
-}
-
-function startGoalAutoFill(profile) {
-  var input = document.getElementById('yl-goal');
-  if (!input) return;
-  var videoId = extractVideoId(window.location.href);
-  input.value = '';
-  input.placeholder = 'Working on a suggestion...';
-
-  function fill(goal) {
-    var inp = document.getElementById('yl-goal');
-    if (inp && inp.dataset.userSet !== 'true' && goal) {
-      inp.value = goal;
-      inp.placeholder = '';
-    }
-  }
-
-  chrome.storage.local.get(GOAL_PREFIX + videoId, function(d) {
-    var cached = d[GOAL_PREFIX + videoId];
-    if (cached && cached.goal && Date.now() - cached.ts < 86400000) {
-      fill(cached.goal);  // instant — prefetched at page load
-      return;
-    }
-    fetchInferredGoal(profile, videoId).then(fill);
-  });
-}
+// ─── Goal auto-fill (REMOVED — no longer personalising exercises) ─────────────────
 
 // ─── Utils ────────────────────────────────────────────────
 
@@ -1006,10 +898,10 @@ function onNav() {
   window._yl_injecting = false;
 
   if (window.location.pathname === '/watch') {
-    setTimeout(function() { injectButton(); startPrefetch(); prefetchGoal(); }, 100);
+    setTimeout(function() { injectButton(); startPrefetch(); }, 100);
   }
 }
 document.addEventListener('yt-navigate-finish', function() { navReady = false; setTimeout(function() { navReady = true; onNav(); }, 500); });
 window.addEventListener('popstate', function() { setTimeout(onNav, 1000); });
 window.addEventListener('hashchange', function() { setTimeout(onNav, 1000); });
-if (window.location.pathname === '/watch') setTimeout(function() { injectButton(); startPrefetch(); prefetchGoal(); }, 500);
+if (window.location.pathname === '/watch') setTimeout(function() { injectButton(); startPrefetch(); }, 500);

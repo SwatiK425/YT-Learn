@@ -56,47 +56,57 @@ PROVIDER_BASE_URLS = {
     "opencode-zen": "https://opencode.ai/zen/v1",
 }
 
-# ─── Prompt log file ───────────────────────────────
-_PROMPT_LOG = os.path.join(os.path.dirname(__file__), "prompts.log")
-_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+# ─── Trace logging ─────────────────────────────────
+_TRACE_LOG = os.path.join(os.path.dirname(__file__), "traces.log")
+_PDT = timezone.utc  # placeholder; we'll use a fixed offset for PDT
+_PDT_OFFSET = -7 * 3600  # UTC-7 (PDT)
 
 
-def _log_prompt(llm, system: str, user: str, temp: float, max_tokens: int, response_text: str = ""):
-    """Append a structured prompt log entry to the log file."""
-    now = datetime.now(timezone.utc)
-    timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    elapsed_ms = int((now - _EPOCH).total_seconds() * 1000)
+def _pdt_now() -> datetime:
+    """Return current time as a naive datetime in PDT."""
+    utc = datetime.now(timezone.utc)
+    return utc.replace(tzinfo=None) + __import__("datetime").timedelta(seconds=_PDT_OFFSET)
 
-    header = (
-        f"════════════════════════════════════════════════════\n"
-        f"[{timestamp}] LLM PROMPT\n"
-        f"  Model: {llm.model} | temp={temp} | max_tokens={max_tokens}\n"
-        f"\n"
-        f"── SYSTEM ({len(system)} chars) ──\n"
-        f"{system}\n"
-        f"\n"
-        f"── USER ({len(user) if user else 0} chars) ──\n"
-        f"{user if user else '(none)'}\n"
-        f"\n"
-    )
 
-    if response_text:
-        resp_trunc = response_text[:2000]
-        header += (
-            f"── RESPONSE ({len(response_text)} chars, first {len(resp_trunc)}) ──\n"
-            f"{resp_trunc}\n"
-        )
+def _trace(trace_id: str, component: str, phase: str, **fields) -> None:
+    """Append a structured trace entry to traces.log.
 
-    header += f"════════════════════════════════════════════════════\n\n"
+    Args:
+        trace_id: unique request-scoped id.
+        component: e.g. 'endpoint', 'llm', 'pipeline', 'critic', 'transcript'.
+        phase: e.g. 'input', 'output', 'start', 'end', 'error'.
+        **fields: arbitrary key=value pairs (content, model, temp, etc.).
+    """
+    ts = _pdt_now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " PDT"
+    parts = [f"[{ts}]", f"[{trace_id}]", f"[{component}]", f"[{phase}]"]
+    for k, v in fields.items():
+        if isinstance(v, str) and len(v) > 3000:
+            parts.append(f"\n  {k} ({len(v)} chars):")
+            parts.append(f"    {v[:3000]}")
+            parts.append(f"    ... [{len(v) - 3000} more chars]")
+        elif isinstance(v, str) and "\n" in v:
+            parts.append(f"\n  {k}:")
+            for line in v.split("\n"):
+                parts.append(f"    | {line}")
+        else:
+            parts.append(f"\n  {k}: {v}")
+    entry = "".join(parts) + "\n\n"
 
     try:
-        with open(_PROMPT_LOG, "a", encoding="utf-8") as f:
-            f.write(header)
+        with open(_TRACE_LOG, "a", encoding="utf-8") as f:
+            f.write(entry)
     except Exception:
-        pass  # Don't crash on write failure
+        pass
 
-    # Still print a brief summary to the terminal
-    print(f"  [LLM] {llm.model} | temp={temp} | max_tokens={max_tokens} | system={len(system)}c | user={len(user) if user else 0}c", flush=True)
+    # Terminal preview — one compact line
+    if component == "llm" and phase == "output":
+        content_len = len(fields.get("content", ""))
+        print(f"  [TRACE {trace_id}] {component} {phase} — {content_len}c", flush=True)
+    elif component in ("endpoint", "pipeline", "critic", "transcript"):
+        brief = fields.get("content", fields.get("message", fields.get("reason", "")))
+        if isinstance(brief, str) and len(brief) > 120:
+            brief = brief[:120] + "..."
+        print(f"  [TRACE {trace_id}] {component} {phase}: {brief}", flush=True)
 
 _client: OpenAI | None = None
 
@@ -256,7 +266,23 @@ Read the transcript and identify:
 1. Main problem being solved
 2. Creator's thesis (the single main argument)
 3. Three to five key insights (each with evidence from the transcript)
-4. The ONE insight that matters most — the 80/20: the single idea that creates the biggest change in someone's ability after watching this video
+4. The ONE insight that matters most — the 80/20: the single idea that creates
+   the biggest change in someone's ability after watching this video
+
+To identify the 80/20 insight, evaluate which insight:
+- Is the foundational prerequisite — without it, nothing else in the video works
+- Makes every other concept in the video click into place
+- Would most change how the learner practices this skill
+- Would leave the learner stuck if misunderstood
+
+The insight must be specific to this video.
+
+Do not produce generic statements such as:
+- "Take action"
+- "Be consistent"
+- "Think critically"
+- "Practice what you learned"
+unless the creator specifically teaches that idea.
 
 Return ONLY valid JSON — no extra text:
 {
@@ -269,37 +295,110 @@ Return ONLY valid JSON — no extra text:
   "pareto_why": "why this one insight matters more than the others (2-3 sentences)"
 }"""
 
-EXERCISE_SYSTEM = """You are a world-class mentor. The learner just watched a video.
+EXERCISE_SYSTEM = """You are an expert teacher and skill-transfer designer.
 
-The single most important insight is:
+Your job is NOT to summarize this video.
+Your job is NOT to generate a generic exercise.
 
-{insight}
+Your job is to convert the creator's most important idea into a
+real-world action that helps this specific learner internalize and
+practice the skill.
 
-What would a world-class mentor stop the learner and insist they practice before continuing the video?
+The final action must be derived from the CONTENT of this video.
 
-BAD EXERCISES (never do these):
-- Reflect on your day...
-- Think about how you feel...
-- Imagine a scenario where...
-- Consider what would happen if...
-- Understand the concept of...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VIDEO ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-GOOD EXAMPLES (use this style):
-1. Open your last product idea. Write down 10 assumptions. Call out the riskiest one. Find one person today who can validate it.
-2. Draft a one-paragraph counter-argument to your own position. Then interview someone who disagrees. Rewrite it based on what you learned.
-3. Draw a quick diagram of the system. Label every interaction point. Modify one label to reduce friction.
+Main problem the video solves: {main_problem}
+Creator's thesis: {creator_thesis}
+Most important insight: {insight}
+Why this insight matters: {evidence}
 
-Your exercise MUST:
-- Take ≤5 minutes
-- Produce a real artifact or observable outcome
-- Be doable right now in the learner's browser or work context
-- Have a clear "done" state
-- Start with "Call"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — UNDERSTAND THE MECHANISM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Study the analysis above.
+
+Ask: What specific mechanism, process, mental model, or behavior makes this insight useful in practice?
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — CONVERT KNOWLEDGE INTO A SKILL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Ask:
+
+"What complete feedback loop, diagnostic workflow, or execution cycle would a master of this content run to measure and improve their work?"
+
+Describe the skill as an observable behavior.
+
+For example:
+
+BAD:
+"Understand customer discovery."
+
+GOOD:
+"Observe a real user's existing workaround and identify the repeated
+pain that makes the workaround necessary."
+
+The skill must come from the specific content of the video.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — DESIGN THE SKILL-TRANSFER CHALLENGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create ONE challenge that makes the learner practice the exact mechanism taught in the video.
+
+The challenge must:
+
+- Be derived directly from the creator's main insight.
+- Require the learner to perform the behavior or process taught.
+- Produce a concrete artifact, decision, observation, experiment,
+  conversation, prototype, analysis, or other observable outcome.
+- Have a clear definition of done.
+- Be achievable now, but meaningful enough to create genuine practice.
+- Have the learner observe, audit, or benchmark the output of their action against a concrete standard (e.g., test cases, metrics, rubrics, or traces).
+
+Do not create an exercise merely because it is easy to describe.
+
+Do not use generic activities such as:
+- "Reflect on..."
+- "Think about..."
+- "Write down your thoughts..."
+- "Consider how..."
+- "Imagine..."
+unless the video specifically teaches reflection, thinking, or
+imagination as the skill.
+
+The challenge must test whether the learner can APPLY the video's
+specific idea.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 4 — VERIFY THE CHALLENGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before returning the answer, ask yourself:
+
+A. If I removed the video transcript, would this challenge still make sense as a generic productivity exercise?
+   If YES, redesign it.
+
+B. Does completing this challenge require executing and evaluating the specific mechanism taught by the creator?"
+   If NO, redesign it.
+
+C. Could the learner complete this challenge without understanding the video?
+   If YES, redesign it.
+
+D. Does the challenge use the learner's real context?
+   If NO, look again for a way to apply it to their actual goal, work, project, or life.
+
+E. Can I point to the specific idea in the video that this challenge exercises?
+   If NO, redesign it.
 
 Return ONLY valid JSON — no extra text:
 {{
   "experiment": "Numbered steps (3-5), each starting with an action verb, newline-separated",
-  "done_criteria": "What counts as done (1 sentence, clear and measurable)",
+  "done_criteria": "Clear, measurable proof of completion (e.g., a specific audit table, benchmark score, before/after metric, or structured output artifact)"
   "why_it_matters": "One sentence connecting this to real-world application"
 }}"""
 
@@ -307,27 +406,29 @@ Return ONLY valid JSON — no extra text:
 # ─── Pipeline Functions ────────────────────────────────────
 
 FORBIDDEN_WORDS = {"reflect", "think about ", "imagine ", "consider ", "understand "}
-ACCEPTED_VERBS = {
-    "build", "interview", "write", "draw", "modify", "prototype", "measure", "ship",
-    "open", "find", "list", "call", "draft", "create", "design", "code", "test",
-    "record", "map", "sketch", "diagram", "collect", "identify", "define", "prepare",
-}
-
-
 async def _llm_call(
     llm: ResolvedLLM,
     system: str,
     user: str,
     temp: float,
     max_tokens: int = 2000,
+    trace_id: str = "",
+    call_label: str = "",
 ) -> str:
     """Call LLM with system + user messages at given temperature."""
     messages = [{"role": "system", "content": system}]
     if user:
         messages.append({"role": "user", "content": user})
 
-    # ── Log the actual prompt to file + brief terminal summary ──
-    _log_prompt(llm, system, user, temp, max_tokens)
+    # ── Trace input ──
+    _trace(trace_id, "llm", "input",
+        call=call_label,
+        model=llm.model,
+        temp=temp,
+        max_tokens=max_tokens,
+        system=system,
+        user=user or "(none)",
+    )
 
     resp = await asyncio.to_thread(
         llm.client.chat.completions.create,
@@ -342,6 +443,13 @@ async def _llm_call(
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         text = text.rsplit("```", 1)[0].strip()
+
+    # ── Trace output ──
+    _trace(trace_id, "llm", "output",
+        call=call_label,
+        finish_reason=resp.choices[0].finish_reason,
+        content=text,
+    )
     return text
 
 
@@ -353,12 +461,6 @@ def critic_exercise(experiment_text: str) -> dict:
         if word in lower:
             return {"pass": False, "reason": f"Exercise contains '{word.strip()}' — must produce something real"}
 
-    first_line = experiment_text.strip().split("\n")[0] if experiment_text else ""
-    import re as _re
-    first_word = _re.sub(r"^\s*\d+[\.\)]\s*", "", first_line).split()[0].lower() if first_line else ""
-    if first_word and first_word not in ACCEPTED_VERBS:
-        return {"pass": False, "reason": f"First step must start with an action verb. Got: '{first_word}'"}
-
     return {"pass": True, "reason": ""}
 
 
@@ -368,22 +470,32 @@ async def generate_experiment(
     transcript: str,
     retry_reason: str | None,
     llm: ResolvedLLM,
+    trace_id: str = "",
 ) -> dict:
     """2-stage pipeline: understand → exercise.
 
-    Stage 1 (temp=0.2): Extract thesis, insights, pareto insight.
-    Stage 2 (temp=0.7): Create exercise from pareto insight only. No transcript.
+    Stage 1 (temp=0.2): Extract thesis, insights, pareto insight with quality rubric.
+    Stage 2 (temp=0.7): Design a skill-transfer challenge using full video context.
     """
+    _trace(trace_id, "pipeline", "start", transcript_length=len(transcript), retry_reason=retry_reason or "none")
+
     # Stage 1: Video understanding — deterministic, low temp
     capped = transcript[:80000]
-    analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 100000)
+    analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 100000, trace_id=trace_id, call_label="stage1_analysis")
     analysis = parse_json_lenient(analysis_text)
     if not analysis or not analysis.get("insights"):
         raise ValueError(f"Analysis step failed: {analysis_text[:200]}")
 
-    # Stage 2: Exercise from pareto insight only — creative, higher temp
+    _trace(trace_id, "pipeline", "stage1_done",
+        insight_count=len(analysis.get("insights", [])),
+        pareto_insight=analysis.get("pareo_insight", "")[:200],
+    )
+
+    # Stage 2: Exercise from pareto insight + full video context
     pareto = analysis.get("pareto_insight", analysis["insights"][0]["insight"])
     evidence = analysis.get("pareto_why", "")
+    main_problem = analysis.get("main_problem", "")
+    creator_thesis = analysis.get("creator_thesis", "")
 
     difficulty_note = ""
     if retry_reason == "too_easy":
@@ -391,19 +503,29 @@ async def generate_experiment(
     elif retry_reason == "too_hard":
         difficulty_note = "DIFFICULTY: Their last exercise was TOO HARD. Simplify and break it down further."
 
-    system = EXERCISE_SYSTEM.format(insight=pareto)
+    system = EXERCISE_SYSTEM.format(
+        insight=pareto,
+        main_problem=main_problem,
+        creator_thesis=creator_thesis,
+        evidence=evidence,
+    )
     user = f"Selected insight: {pareto}\nWhy it matters: {evidence}\n\n{difficulty_note}" if difficulty_note else f"Selected insight: {pareto}\nWhy it matters: {evidence}"
 
     last_err = None
     for attempt in range(2):
-        text = await _llm_call(llm, system, user, 0.7, 100000)
+        text = await _llm_call(llm, system, user, 0.7, 100000, trace_id=trace_id, call_label=f"stage2_exercise_attempt{attempt}")
         parsed = parse_json_lenient(text)
         if not parsed or not parsed.get("experiment"):
             last_err = f"Unparseable exercise ({len(text)} chars)"
-            print(f"  exercise attempt {attempt}: unparseable")
+            _trace(trace_id, "pipeline", "retry", reason=last_err, attempt=attempt)
             continue
 
         verdict = critic_exercise(parsed["experiment"])
+        _trace(trace_id, "critic", verdict["pass"] and "pass" or "reject",
+            attempt=attempt,
+            reason=verdict.get("reason", ""),
+            exercise_preview=parsed["experiment"][:200],
+        )
         if verdict["pass"]:
             parsed.setdefault("done_criteria", "")
             parsed.setdefault("why_it_matters", "")
@@ -422,13 +544,14 @@ async def generate_experiment(
                 "five_insights": analysis.get("insights", []),
                 "selection_reasoning": {"why_best": analysis.get("pareto_why", ""), "why_others_less_important": []},
             }
-            print(f"  [PIPELINE] {len(analysis.get('insights', []))} insights → pareto → exercise ({len(parsed['experiment'])} chars)")
+            _trace(trace_id, "pipeline", "end", status="success", exercise_length=len(parsed["experiment"]))
             return result
 
-        print(f"  exercise attempt {attempt}: critic rejected — {verdict['reason']}")
+        _trace(trace_id, "critic", "retry", attempt=attempt, reason=verdict["reason"])
         last_err = verdict["reason"]
         user += f"\n\nFEEDBACK FROM CRITIC: {verdict['reason']} Rewrite the exercise."
 
+    _trace(trace_id, "pipeline", "end", status="error", reason=last_err or "unknown")
     raise ValueError(f"Exercise generation failed: {last_err}")
 
 
@@ -512,25 +635,39 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
       error    — message
     """
     vid = extract_video_id(req.video_url)
+    trace_id = uuid.uuid4().hex[:12]
+
+    _trace(trace_id, "endpoint", "start",
+        endpoint="/api/suggest/stream",
+        video_url=req.video_url or "",
+        has_transcript="yes" if req.transcript else "no",
+        user_id=user_id or "anon",
+    )
 
     async def gen():
+        nonlocal trace_id
         # 1. Skeleton first — the user sees structure within milliseconds.
         yield "event: skeleton\ndata: {}\n\n"
 
         try:
             llm = resolve_llm(req.llm)
         except HTTPException as he:
+            _trace(trace_id, "endpoint", "error", message=he.detail)
             yield f"event: error\ndata: {json.dumps({'message': he.detail})}\n\n"
             return
 
         if not vid:
+            _trace(trace_id, "endpoint", "error", message="Invalid YouTube URL")
             yield f"event: error\ndata: {json.dumps({'message': 'Invalid YouTube URL'})}\n\n"
             return
 
         transcript = req.transcript or await fetch_transcript(vid)
         if not transcript:
+            _trace(trace_id, "endpoint", "error", message="Could not fetch transcript")
             yield f"event: error\ndata: {json.dumps({'message': 'Could not fetch transcript'})}\n\n"
             return
+
+        _trace(trace_id, "transcript", "fetched", length=len(transcript))
 
         cache_key = f"{user_id or 'anon'}:{vid}:{llm.model}"
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -540,24 +677,24 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
             entry = exercise_cache[cache_key]
             if now_ts - entry["ts"] < CACHE_TTL:
                 payload = {**entry["result"], "cached": True}
+                _trace(trace_id, "endpoint", "cache_hit")
                 yield f"event: done\ndata: {json.dumps(payload)}\n\n"
                 return
 
         try:
-            # The new pipeline handles its own compression internally.
-            # Just pass the raw transcript — hierarchical compression is now
-            # always the first step (not a separate conditional path).
             yield f"event: status\ndata: {json.dumps({'message': 'Analyzing video...'})}\n\n"
 
-            result = await generate_experiment(transcript, req.retry_reason, llm)
+            result = await generate_experiment(transcript, req.retry_reason, llm, trace_id=trace_id)
 
             exp_id = str(uuid.uuid4())[:12]
             response_data = {"experiment_id": exp_id, **result}
             exercise_cache[cache_key] = {"result": response_data, "ts": now_ts}
             _log_experiment(exp_id, user_id, vid, result)
 
+            _trace(trace_id, "endpoint", "end", experiment_id=exp_id, cached=False)
             yield f"event: done\ndata: {json.dumps(response_data)}\n\n"
         except Exception as e:
+            _trace(trace_id, "endpoint", "error", message=str(e))
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
