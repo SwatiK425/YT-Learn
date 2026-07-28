@@ -5,7 +5,7 @@
   "description": "Get a 5-minute micro-experiment from any YouTube video — personalised to your goal, applied to your project.",
   "permissions": ["storage"],
   "host_permissions": [
-    "http://localhost:8002/*",
+    "http://localhost:8003/*",
     "https://www.youtube.com/*",
     "https://youtube.com/*"
   ],
@@ -25,7 +25,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["popup/*", "icons/*"],
+      "resources": ["popup/*", "icons/*", "transcript-fetcher.js"],
       "matches": ["*://www.youtube.com/*"]
     }
   ],

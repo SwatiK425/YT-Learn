@@ -1,7 +1,7 @@
 // ─── YT-Learn Content Script ─────────────────────────
 // Inject button, handle overlay, fetch transcript, call backend.
 
-const BACKEND = 'http://localhost:8002';
+const BACKEND = 'http://localhost:8003';
 
 // Set by retry pills; consumed by the next performGenerate. Travels in the
 // /api/suggest request body so the regeneration is guaranteed to see it
@@ -65,6 +65,28 @@ function clearCacheForVideo(videoUrl, userId) {
     var exercises = data.yl_exercises || {};
     delete exercises[key];
     chrome.storage.local.set({ yl_exercises: exercises });
+  });
+}
+
+// ─── Blocked result cache (declined exercises remember their state) ──
+function loadCachedBlocked(videoUrl, userId) {
+  return new Promise(function(resolve) {
+    var key = makeCacheKey(videoUrl, userId) + '_blocked';
+    chrome.storage.local.get('yl_blocked', function(data) {
+      var blocked = data.yl_blocked || {};
+      var cached = blocked[key];
+      if (cached && Date.now() - cached.ts < 86400000) resolve(cached.data);
+      else resolve(null);
+    });
+  });
+}
+
+function saveCachedBlocked(videoUrl, userId, data) {
+  var key = makeCacheKey(videoUrl, userId) + '_blocked';
+  chrome.storage.local.get('yl_blocked', function(d) {
+    var blocked = d.yl_blocked || {};
+    blocked[key] = { data: data, ts: Date.now() };
+    chrome.storage.local.set({ yl_blocked: blocked });
   });
 }
 
@@ -350,8 +372,16 @@ function showExperimentView(userId, videoUrl) {
       console.log('[YT-Learn] rendered from cache');
       return;
     }
-    // No cache — auto-generate immediately
-    performGenerate(videoUrl, userId, currentExpId);
+    // Check for cached blocked result
+    loadCachedBlocked(videoUrl, userId).then(function(blocked) {
+      if (blocked) {
+        renderBlockedView(blocked, videoUrl, userId);
+        console.log('[YT-Learn] rendered blocked from cache');
+        return;
+      }
+      // No cache — auto-generate immediately
+      performGenerate(videoUrl, userId, currentExpId);
+    });
   });
 
   // ─── Generate / Try Again button ──────────────────────
@@ -414,6 +444,48 @@ function renderExerciseFromCache(cached, userId, videoUrl) {
   wireRetryPills(userId, currentExpId, videoUrl);
   generateCount = 1;
   document.getElementById('yl-generate').textContent = '↻ Try Again';
+}
+
+// ─── Render blocked / not-supported view ───────────────────
+function renderBlockedView(data, videoUrl, userId) {
+  setLoading(false);
+  hideStatus();
+  var resultEl = document.getElementById('yl-result');
+  if (!resultEl) return;
+  resultEl.classList.remove('hidden');
+  document.getElementById('yl-skeleton').classList.add('hidden');
+  document.getElementById('yl-content').classList.add('hidden');
+  document.getElementById('yl-generate').classList.remove('hidden');
+  document.getElementById('yl-generate').textContent = '↻ Try Again';
+
+  // Cache the blocked result so reopening the overlay is instant
+  saveCachedBlocked(videoUrl, userId, data);
+
+  var safeReason = escapeHtml(data.reason || 'This video does not teach a skill you can practice.');
+  resultEl.innerHTML = '\
+    <div class="yl-blocked" style="text-align:center;padding:24px 12px;color:#bbb;">\
+      <div style="font-size:32px;margin-bottom:8px;">🔬</div>\
+      <div style="font-size:14px;font-weight:600;color:#e0e0e0;margin-bottom:6px;">\
+        No exercise for this one\
+      </div>\
+      <div style="font-size:12px;color:#999;line-height:1.5;margin-bottom:16px;">\
+        ' + safeReason + '\
+        <br><br>\
+        This product builds exercises from specific types of tutorials only.\
+        <br><br>\
+        Wrong call?\
+      </div>\
+      <button id="yl-retry-blocked" class="yl-btn yl-btn-primary" style="display:inline-block;">\
+        ↻ Try Again\
+      </button>\
+    </div>';
+
+  document.getElementById('yl-retry-blocked').addEventListener('click', function() {
+    // Fresh generation (not a retry) — clear any stale retry state
+    currentExpId = null;
+    generateCount = 0;
+    performGenerate(videoUrl, userId, null);
+  });
 }
 
 // ─── Streaming JSON parser ────────────────────────────────
@@ -531,8 +603,13 @@ async function performGenerate(videoUrl, userId, currentExpId) {
         },
         done: function(payload) { donePayload = payload; },
         error: function(payload) { streamErr = payload.message || 'Stream error'; },
+        blocked: function(payload) {
+          streamErr = 'blocked';
+          renderBlockedView(payload, videoUrl, userId);
+        },
       });
 
+      if (streamErr === 'blocked') return;
       if (streamErr || !donePayload) {
         showStatus(streamErr || 'Generation failed. Try again.', true);
         setLoading(false);
@@ -581,6 +658,10 @@ async function performGenerate(videoUrl, userId, currentExpId) {
     });
     var data = await resp.json();
     if (!resp.ok) { showStatus(data.detail || 'Generation failed.', true); setLoading(false); return; }
+    if (data.status === 'blocked') {
+      renderBlockedView(data, videoUrl, userId);
+      return;
+    }
 
     var expId = data.experiment_id;
     document.getElementById('yl-insight').textContent = data.principle;
@@ -759,66 +840,9 @@ function injectAndFetch(videoId, timeoutSec) {
       if (e.detail && e.detail.id === safeId) { document.removeEventListener('_yl_tr', handler); resolve(e.detail.text || null); }
     };
     document.addEventListener('_yl_tr', handler, { once: true });
-    var injectedFn = function() {
-      var id = '__VID__';
-      var maxTry = 20, tries = 0;
-      function poll() {
-        try {
-          var p = window.ytInitialPlayerResponse;
-          var c = p && p.captions && p.captions.playerCaptionsTracklistRenderer;
-          var tracks = c && c.captionTracks;
-          if (tracks && tracks.length) {
-            var tr = tracks.find(function(x) { return x.languageCode && x.languageCode.indexOf('en') === 0; }) || tracks[0];
-            if (tr && tr.baseUrl) { fetchBaseUrl(tr.baseUrl); return; }
-          }
-        } catch(e) {}
-        try {
-          var videoEl = document.querySelector('video');
-          if (videoEl && videoEl.textTracks && videoEl.textTracks.length > 0) { if (extractFromTextTracks(videoEl) === true) return; }
-        } catch(e) {}
-        if (++tries < maxTry) setTimeout(poll, 500);
-        else tryThirdParty();
-      }
-      function fetchBaseUrl(url) {
-        fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
-          .then(function(text) {
-            var result = parseTranscriptResponse(text);
-            if (result) dispatch(result);
-            else {
-              var sep = url.indexOf('?') >= 0 ? '&' : '?';
-              fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
-                .then(function(t2) { dispatch(parseTranscriptResponse(t2) || null); }).catch(function() { dispatch(null); });
-            }
-          }).catch(function() { dispatch(null); });
-      }
-      function parseTranscriptResponse(text) {
-        if (!text) return null;
-        try { var d = JSON.parse(text); if (d.events) { var p = []; for (var ei = 0; ei < d.events.length; ei++) { var segs = d.events[ei].segs || []; for (var si = 0; si < segs.length; si++) { if (segs[si].utf8) p.push(segs[si].utf8); } } if (p.length) return p.join(' ').replace(/\s+/g, ' ').trim(); } } catch(e) {}
-        try { var xp = new DOMParser(); var xml = xp.parseFromString(text, 'text/xml'); var texts = xml.querySelectorAll('text'); if (texts.length > 0) { var p = []; for (var ti = 0; ti < texts.length; ti++) { if (texts[ti].textContent) p.push(texts[ti].textContent.trim()); } if (p.length) return p.join(' ').replace(/\s+/g, ' ').trim(); } var ps = xml.querySelectorAll('p'); if (ps.length > 0) { var p2 = []; for (var pi = 0; pi < ps.length; pi++) { if (ps[pi].textContent) p2.push(ps[pi].textContent.trim()); } if (p2.length) return p2.join(' ').replace(/\s+/g, ' ').trim(); } } catch(e) {}
-        return null;
-      }
-      function extractFromTextTracks(video) {
-        var tracks = video.textTracks;
-        for (var i = 0; i < tracks.length; i++) {
-          var t = tracks[i];
-          if (t.language && t.language.indexOf('en') !== 0) continue;
-          if (t.cues && t.cues.length > 0) { var p = []; for (var j = 0; j < t.cues.length; j++) { if (t.cues[j].text) p.push(t.cues[j].text); } if (p.length) { dispatch(p.join(' ').replace(/\s+/g, ' ').trim()); return true; } }
-        }
-        return null;
-      }
-      function tryThirdParty() {
-        var url = 'https://youtubetranscript.com/?v=' + id + '&format=json';
-        fetch(url).then(function(r) { return r.json(); }).then(function(d) {
-          if (d && d.length) { var p = []; for (var i = 0; i < d.length; i++) { if (d[i].text) p.push(d[i].text); } if (p.length) { dispatch(p.join(' ').replace(/\s+/g, ' ').trim()); return; } }
-          fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { dispatch(parseTranscriptResponse(t2) || null); }).catch(function() { dispatch(null); });
-        }).catch(function() { dispatch(null); });
-      }
-      function dispatch(text) { document.dispatchEvent(new CustomEvent('_yl_tr', { detail: { id: id, text: text } })); }
-      poll();
-    };
-    var codeStr = '(' + injectedFn.toString().replace('__VID__', safeId) + ')()';
     var script = document.createElement('script');
-    script.textContent = codeStr;
+    script.src = chrome.runtime.getURL('transcript-fetcher.js');
+    script.setAttribute('data-video-id', safeId);
     document.body.appendChild(script);
     setTimeout(function() { try { script.remove(); } catch(e) {} }, 100);
     setTimeout(function() { document.removeEventListener('_yl_tr', handler); resolve(null); }, timeoutSec * 1000);

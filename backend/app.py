@@ -45,6 +45,16 @@ BASE_URL = os.getenv("OPENAI_BASE_URL", "https://generativelanguage.googleapis.c
 CACHE_TTL = 86400  # 24 hours
 GEN_TIMEOUT = 60   # fail fast; a hung call should never cost minutes
 
+# Domains YT-Learn currently serves. The category label from the LLM
+# guides this filter, but teachability_score does the heavy gating.
+ACTIVE_CATEGORIES = {
+    "coding", "software", "technical", "data", "design",
+    "business", "career", "entrepreneurship", "sales",
+    "marketing", "leadership", "communication", "storytelling",
+    "negotiation", "personal-finance",
+    "productivity", "science", "language", "academic",
+}
+
 # Provider presets: name → OpenAI-compatible base URL. The extension sends a
 # provider + model + api_key per request (BYOK); env vars are the fallback
 # when no per-request config is given.
@@ -228,12 +238,31 @@ async def fetch_transcript(video_id: str) -> str | None:
         api = YouTubeTranscriptApi(
             proxy_config=GenericProxyConfig(http_url=proxy_url, https_url=proxy_url) if proxy_url else None
         )
+        # Try explicit languages first, then auto-generated, then any available
+        try_langs = ["en", "a.en", "hi", "a.hi", "es", "a.es"]
         segments = await asyncio.wait_for(
-            asyncio.to_thread(api.fetch, video_id, languages=["en", "a.en"]),
+            asyncio.to_thread(api.fetch, video_id, languages=try_langs),
             timeout=15,
         )
         return " ".join(seg.text for seg in segments)
     except Exception as e:
+        # Last resort — list available transcripts and try the first one
+        try:
+            api2 = YouTubeTranscriptApi(
+                proxy_config=GenericProxyConfig(http_url=proxy_url, https_url=proxy_url) if proxy_url else None
+            )
+            available = await asyncio.wait_for(
+                asyncio.to_thread(lambda: list(api2.list(video_id))),
+                timeout=10,
+            )
+            if available:
+                segs = await asyncio.wait_for(
+                    asyncio.to_thread(available[0].fetch),
+                    timeout=15,
+                )
+                return " ".join(s.text for s in segs)
+        except Exception:
+            pass
         print(f"Transcript failed for {video_id}: {e}")
         return None
 
@@ -262,6 +291,47 @@ def parse_json_lenient(content: str) -> dict | None:
 
 ANALYSIS_SYSTEM = """You are an expert teacher analyzing a video transcript.
 
+FIRST — JUDGE ACTIONABILITY: Can a viewer walk away from this video
+with ONE nameable thing to try?
+
+Ignore the format — podcast, interview, lecture, livestream, demo, vlog,
+tutorial. The packaging tells you nothing. Judge only the teachability of
+the content itself.
+
+TECHABILITY SCORE (0–100):
+• High (70+): The creator teaches a specific mechanism, process, mental
+  model, or technique the viewer can replicate. The viewer could name
+  exactly one thing to try after watching.
+• Medium (40–69): Conceptual or educational content whose ideas can be
+  applied or practiced, even if indirectly. The viewer could name a
+  principle to act on or a behavior to adopt.
+• Low (<40): Content designed to inform, entertain, opine, or document —
+  not to enable action. The viewer walks away knowing more but cannot
+  name a single thing to try.
+
+Be honest and neutral. Never inflate the score. A well-produced news
+analysis or documentary scores low even if it's excellent at what it does.
+A casual livestream might score high if it contains real technique.
+
+CATEGORY: A hint for organization, not a gate. Pick the best fit from:
+coding, software, technical, data, design,
+business, career, entrepreneurship, sales,
+marketing, leadership, communication, storytelling,
+negotiation, personal-finance,
+productivity, science, language, academic,
+or a short label (1–2 words) describing the actual domain. Use "other"
+only when nothing fits.
+
+If teachability_score is below 40:
+  Output ONLY the three teachability fields with a one-sentence
+  friendly "reason", and empty strings for all analysis fields.
+
+If score IS 40+, continue with the full analysis below.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FULL ANALYSIS (score 40+ only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 Read the transcript and identify:
 1. Main problem being solved
 2. Creator's thesis (the single main argument)
@@ -284,15 +354,23 @@ Do not produce generic statements such as:
 - "Practice what you learned"
 unless the creator specifically teaches that idea.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 Return ONLY valid JSON — no extra text:
+
 {
-  "main_problem": "description of the core problem being addressed",
-  "creator_thesis": "the single main argument the creator is making",
+  "teachability_score": <0-100>,
+  "category": "<domain>",
+  "reason": "One-sentence explanation",
+  "main_problem": "... or empty if score < 40",
+  "creator_thesis": "... or empty if score < 40",
   "insights": [
     {"insight": "insight text", "evidence": "supporting evidence from transcript"}
-  ],
-  "pareto_insight": "the single insight that matters most (80/20)",
-  "pareto_why": "why this one insight matters more than the others (2-3 sentences)"
+  ] or empty [] if score < 40,
+  "pareto_insight": "... or empty if score < 40",
+  "pareto_why": "... or empty if score < 40"
 }"""
 
 EXERCISE_SYSTEM = """You are an expert teacher and skill-transfer designer.
@@ -483,8 +561,51 @@ async def generate_experiment(
     capped = transcript[:80000]
     analysis_text = await _llm_call(llm, ANALYSIS_SYSTEM, capped, 0.2, 100000, trace_id=trace_id, call_label="stage1_analysis")
     analysis = parse_json_lenient(analysis_text)
-    if not analysis or not analysis.get("insights"):
-        raise ValueError(f"Analysis step failed: {analysis_text[:200]}")
+    if not analysis:
+        raise ValueError(f"Analysis step failed — unparseable JSON: {analysis_text[:200]}")
+
+    # ── Classification gate ──
+    teach_score = analysis.get("teachability_score", 0)
+    category = (analysis.get("category", "other") or "other").lower()
+    reason = analysis.get("reason", "")
+
+    if teach_score < 40:
+        result = {
+            "status": "blocked",
+            "reason": reason or "This video doesn't teach a practical skill.",
+            "teachability_score": teach_score,
+            "category": category,
+            "is_out_of_scope": False,
+        }
+        _trace(trace_id, "pipeline", "blocked",
+            teachability_score=teach_score, category=category,
+            reason=reason)
+        return result
+
+    if category not in ACTIVE_CATEGORIES:
+        # High-score content is a real skill even if the category label doesn't match.
+        # Only gate medium-scoring conceptual content by category.
+        if teach_score >= 70:
+            _trace(trace_id, "pipeline", "note",
+                msg="bypassing category gate — high-scoring content",
+                teachability_score=teach_score, category=category)
+        else:
+            domain_hint = f"YT-Learn doesn't support '{category}' yet."
+            result = {
+                "status": "blocked",
+                "reason": reason or domain_hint,
+                "teachability_score": teach_score,
+                "category": category,
+                "is_out_of_scope": True,
+            }
+            _trace(trace_id, "pipeline", "blocked",
+                teachability_score=teach_score, category=category,
+                reason=reason, is_out_of_scope=True)
+            return result
+
+    # ── Validate analysis fields ──
+    if not analysis.get("insights"):
+        raise ValueError(f"Analysis step failed — no insights: {analysis_text[:200]}")
 
     _trace(trace_id, "pipeline", "stage1_done",
         insight_count=len(analysis.get("insights", [])),
@@ -614,6 +735,9 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
 
     try:
         result = await generate_experiment(prepared, req.retry_reason, llm)
+        if result.get("status") == "blocked":
+            exercise_cache[cache_key] = {"result": result, "ts": now_ts}
+            return {"status": "blocked", **result}
     except Exception as e:
         raise HTTPException(502, f"Experiment generation failed: {e}")
 
@@ -685,6 +809,15 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
             yield f"event: status\ndata: {json.dumps({'message': 'Analyzing video...'})}\n\n"
 
             result = await generate_experiment(transcript, req.retry_reason, llm, trace_id=trace_id)
+
+            # Blocked classification → yield blocked event and stop
+            if result.get("status") == "blocked":
+                exercise_cache[cache_key] = {"result": result, "ts": now_ts}
+                _trace(trace_id, "endpoint", "blocked",
+                    reason=result.get("reason",""),
+                    category=result.get("category",""))
+                yield f"event: blocked\ndata: {json.dumps(result)}\n\n"
+                return
 
             exp_id = str(uuid.uuid4())[:12]
             response_data = {"experiment_id": exp_id, **result}
@@ -791,14 +924,9 @@ async def infer_goal(req: InferGoalRequest):
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "default_model": MODEL,
-        "default_fast_model": FAST_MODEL,
-        "byok": "clients may send llm config per request",
-    }
+    return {"status": "ok", "default_model": MODEL, "default_fast_model": FAST_MODEL, "byok": "clients may send llm config per request"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8002, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8003, reload=True)
