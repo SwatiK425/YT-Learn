@@ -326,3 +326,20 @@
 }
 #yt-learn-settings:hover { opacity: 1; }
 select.yl-input { appearance: auto; }
+
+/* ─── Model selector (BYOK settings) ────────────────── */
+.yl-model-option {
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 5px;
+  color: #1a1a2e;
+  transition: background 0.1s;
+}
+.yl-model-option:hover { background: #f0f0ff; }
+.yl-model-selected {
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 500;
+}
+.yl-model-selected:hover { background: #dde4ff; }

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.proxies import GenericProxyConfig
 from openai import OpenAI
+from providers import test_connection as prov_test_connection, get_adapter
 
 load_dotenv()
 
@@ -37,9 +38,9 @@ app.add_middleware(
 #   Anthropic:   OPENAI_BASE_URL=https://api.anthropic.com/v1/
 #   OpenRouter:  OPENAI_BASE_URL=https://openrouter.ai/api/v1
 #   OpenAI:      OPENAI_BASE_URL=https://api.openai.com/v1
+# Model info is now BYOK-driven. The env defaults shown in /health are advisory only.
 MODEL = os.getenv("MODEL", "gemini-2.5-flash")
-FAST_MODEL = os.getenv("FAST_MODEL", MODEL)  # for infer-goal + long-video notes
-API_KEY = os.getenv("OPENAI_API_KEY")
+FAST_MODEL = os.getenv("FAST_MODEL", MODEL)
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/")
 
 CACHE_TTL = 86400  # 24 hours
@@ -118,14 +119,6 @@ def _trace(trace_id: str, component: str, phase: str, **fields) -> None:
             brief = brief[:120] + "..."
         print(f"  [TRACE {trace_id}] {component} {phase}: {brief}", flush=True)
 
-_client: OpenAI | None = None
-
-def get_default_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-    return _client
-
 
 class LLMConfig(BaseModel):
     """Per-request model routing. api_key never touches logs or storage."""
@@ -144,17 +137,24 @@ class ResolvedLLM:
 
 def resolve_llm(cfg: LLMConfig | None) -> ResolvedLLM:
     """Turn optional per-request config into (client, model, fast_model).
-    BYOK disabled — always uses server env defaults."""
-    # BYOK commented out: always use server .env defaults
-    # if cfg and cfg.api_key and cfg.model:
-    #     base = cfg.base_url or PROVIDER_BASE_URLS.get(cfg.provider, "")
-    #     if not base:
-    #         raise HTTPException(400, "Unknown provider and no base_url given.")
-    #     client = OpenAI(api_key=cfg.api_key, base_url=base)
-    #     return ResolvedLLM(client, cfg.model, cfg.fast_model or cfg.model)
-    if not API_KEY:
-        raise HTTPException(400, "No API key configured in .env")
-    return ResolvedLLM(get_default_client(), MODEL, FAST_MODEL)
+    BYOK is required — rejects requests without api_key."""
+    if cfg and cfg.api_key:
+        adapter = get_adapter(cfg.provider) if cfg.provider else None
+        if adapter:
+            base = cfg.base_url or adapter.base_url
+            model = cfg.model or adapter.default_model
+            fast = cfg.fast_model or model
+            client = OpenAI(api_key=cfg.api_key, base_url=base)
+            return ResolvedLLM(client, model, fast)
+        # Unknown provider — treat as custom OpenAI-compatible
+        base = cfg.base_url
+        if not base:
+            raise HTTPException(400, f"Unknown provider '{cfg.provider}' and no base_url provided.")
+        model = cfg.model or "gpt-4o-mini"
+        fast = cfg.fast_model or model
+        client = OpenAI(api_key=cfg.api_key, base_url=base)
+        return ResolvedLLM(client, model, fast)
+    raise HTTPException(400, "No API key provided. Configure a model in the extension settings first.")
 
 # ─── In-memory stores ─────────────────────────────────────
 profiles: dict[str, dict] = {}
@@ -715,6 +715,10 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
     if not vid:
         raise HTTPException(400, "Invalid YouTube URL.")
 
+    # Log BYOK provider+model so user can verify their key is in use
+    byok_prefix = req.llm.provider if req.llm and req.llm.provider else "custom"
+    print(f"  [BYOK] suggest — provider={byok_prefix}, model={llm.model}", flush=True)
+
     transcript = req.transcript or await fetch_transcript(vid)
     if not transcript:
         raise HTTPException(400, "Could not fetch transcript.")
@@ -924,7 +928,17 @@ async def infer_goal(req: InferGoalRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "default_model": MODEL, "default_fast_model": FAST_MODEL, "byok": "clients may send llm config per request"}
+    return {"status": "ok", "default_model": MODEL, "default_fast_model": FAST_MODEL, "byok": "enabled"}
+
+@app.post("/api/llm/test-connection")
+async def llm_test_connection(body: dict):
+    provider = (body.get("provider") or "").strip().lower()
+    api_key = (body.get("api_key") or "").strip()
+    if not provider:
+        raise HTTPException(400, "provider is required")
+    if not api_key:
+        raise HTTPException(400, "api_key is required")
+    return prov_test_connection(provider, api_key)
 
 
 if __name__ == "__main__":

@@ -13,19 +13,20 @@ var pendingRetryReason = null;
 // holds nothing. Model lists are editable suggestions, not hard constraints,
 // so they never go stale.
 var PROVIDERS = {
-  google:     { label: 'Google AI',    needsBase: false, models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.1-flash', 'gemini-3.1-pro'], fast: 'gemini-2.5-flash' },
-  anthropic:  { label: 'Anthropic',    needsBase: false, models: ['claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-fable-5'], fast: 'claude-sonnet-5' },
-  openai:     { label: 'OpenAI',       needsBase: false, models: ['gpt-4o', 'gpt-4o-mini'], fast: 'gpt-4o-mini' },
-  openrouter: { label: 'OpenRouter',   needsBase: false, models: ['anthropic/claude-sonnet-4-6', 'deepseek/deepseek-chat', 'google/gemini-2.5-flash'], fast: '' },
-  'opencode-zen': { label: 'OpenCode Zen', needsBase: false, models: ['deepseek-v4-flash-free', 'hy3-free', 'north-mini-code-free', 'nemotron-3-ultra-free'], fast: 'hy3-free' },
-  custom:     { label: 'Custom (OpenAI-compatible)', needsBase: true, models: [], fast: '' }
+  google:     { label: 'Google AI',    needsBase: false, fast: 'gemini-2.5-flash' },
+  anthropic:  { label: 'Anthropic',    needsBase: false, fast: 'claude-sonnet-5-20250202' },
+  openai:     { label: 'OpenAI',       needsBase: false, fast: 'gpt-4o-mini' },
+  openrouter: { label: 'OpenRouter',   needsBase: false, fast: '' },
+  'opencode-zen': { label: 'OpenCode Zen', needsBase: false, fast: 'deepseek-v4-flash-free' },
+  custom:     { label: 'Custom (OpenAI-compatible)', needsBase: true, fast: '' }
 };
 
 function getLLMConfig() {
   return new Promise(function(resolve) {
     chrome.storage.local.get('yl_llm', function(d) {
       var c = d.yl_llm;
-      if (c && c.api_key && c.model) resolve(c);
+      // Model is optional — backend uses provider default if empty
+      if (c && c.api_key) resolve(c);
       else resolve(null); // backend falls back to its env defaults
     });
   });
@@ -186,6 +187,9 @@ function closeOverlay() { if (overlay) { overlay.remove(); overlay = null; } }
 // ─── Profile View (REMOVED — was role + goal onboarding, no longer needed) ───────
 
 // ─── Model Settings View (BYOK) ─────────────────────────
+// Updated: Test Connection button + live model list from API.
+var _yl_modelsCache = null; // { provider: [{id, name}], default_model } from last test
+
 function showModelSettingsView() {
   const views = document.getElementById('yt-learn-views');
   if (!views) return;
@@ -206,12 +210,19 @@ function showModelSettingsView() {
       <input id="yl-base-url" class="yl-input" placeholder="https://your-endpoint/v1" />
     </div>
 
-    <label style="font-size:13px;color:#888;display:block;margin-top:10px;">Model</label>
-    <input id="yl-model" class="yl-input" list="yl-model-list" placeholder="Model name" />
-    <datalist id="yl-model-list"></datalist>
-
     <label style="font-size:13px;color:#888;display:block;margin-top:10px;">API key</label>
-    <input id="yl-api-key" class="yl-input" type="password" placeholder="sk-..." autocomplete="off" />
+    <input id="yl-api-key" class="yl-input" type="password" placeholder="sk-... or AIza..." autocomplete="off" />
+
+    <button id="yl-test-connection" class="yl-btn yl-btn-secondary" style="width:100%;margin-top:10px;text-align:center;">
+      ↻ Test Connection
+    </button>
+
+    <div id="yl-connection-status" class="yl-status hidden" style="margin-top:8px;"></div>
+
+    <div id="yl-model-section" class="hidden">
+      <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Model <span style="color:#666;font-size:11px;">(optional — default used if not selected)</span></label>
+      <div id="yl-model-list-container" style="max-height:200px;overflow-y:auto;border:1px solid #444;border-radius:8px;padding:4px;"></div>
+    </div>
 
     <div id="yl-settings-status" class="yl-status hidden"></div>
 
@@ -222,44 +233,141 @@ function showModelSettingsView() {
   `;
 
   var providerSel = document.getElementById('yl-provider');
-  var modelInput = document.getElementById('yl-model');
-  var datalist = document.getElementById('yl-model-list');
   var baseWrap = document.getElementById('yl-base-wrap');
 
   function refreshProviderUI(keepModel) {
     var p = PROVIDERS[providerSel.value] || PROVIDERS.custom;
     baseWrap.classList.toggle('hidden', !p.needsBase);
-    datalist.innerHTML = p.models.map(function(mo) { return '<option value="' + mo + '"></option>'; }).join('');
-    if (!keepModel) modelInput.value = p.models[0] || '';
+    // Clear model cache when provider changes
+    _yl_modelsCache = null;
+    document.getElementById('yl-model-section').classList.add('hidden');
+    var status = document.getElementById('yl-connection-status');
+    status.className = 'yl-status hidden';
+    // For custom provider, show text input instead of dropdown
+    if (providerSel.value === 'custom') {
+      document.getElementById('yl-model-section').innerHTML = `
+        <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Model</label>
+        <input id="yl-model-custom" class="yl-input" placeholder="e.g. gpt-4o-mini" />
+      `;
+    } else {
+      document.getElementById('yl-model-section').innerHTML = `
+        <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Model <span style="color:#666;font-size:11px;">(optional — click Test Connection first)</span></label>
+        <div id="yl-model-list-container" style="max-height:200px;overflow-y:auto;border:1px solid #444;border-radius:8px;padding:4px;"><p style="color:#666;font-size:12px;text-align:center;padding:12px;">Click "Test Connection" to load available models</p></div>
+      `;
+    }
   }
 
   providerSel.addEventListener('change', function() { refreshProviderUI(false); });
 
-  // Load existing config
+  // ── Test Connection ──────────────────────────────────
+  document.getElementById('yl-test-connection').addEventListener('click', async function() {
+    var btn = this;
+    var provider = providerSel.value;
+    var apiKey = document.getElementById('yl-api-key').value.trim();
+    var status = document.getElementById('yl-connection-status');
+    var modelSection = document.getElementById('yl-model-section');
+
+    function setStatus(ok, msg) {
+      status.textContent = msg;
+      status.className = 'yl-status ' + (ok ? 'yl-status-ok' : 'yl-status-err');
+    }
+
+    if (!apiKey) { setStatus(false, 'Enter your API key first.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Testing...';
+    setStatus(true, 'Contacting backend...');
+    modelSection.classList.add('hidden');
+
+    try {
+      var resp = await fetch(BACKEND + '/api/llm/test-connection', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: provider, api_key: apiKey })
+      });
+      var data = await resp.json();
+
+      if (data.valid) {
+        _yl_modelsCache = data;
+        setStatus(true, '✓ Connected — ' + data.models.length + ' model(s) available');
+
+        // Populate model list
+        var container = document.getElementById('yl-model-list-container');
+        if (container) {
+          container.innerHTML = '';
+          data.models.forEach(function(m, idx) {
+            var isDefault = m.id === data.default_model;
+            var div = document.createElement('div');
+            div.className = 'yl-model-option' + (isDefault ? ' yl-model-selected' : '');
+            div.dataset.modelId = m.id;
+            div.textContent = m.name;
+            if (isDefault) div.textContent += ' ⭐';
+            div.addEventListener('click', function() {
+              container.querySelectorAll('.yl-model-option').forEach(function(el) { el.classList.remove('yl-model-selected'); });
+              this.classList.add('yl-model-selected');
+            });
+            container.appendChild(div);
+          });
+          // If no default marker, select first
+          if (!container.querySelector('.yl-model-selected') && container.firstChild) {
+            container.firstChild.classList.add('yl-model-selected');
+          }
+        }
+        modelSection.classList.remove('hidden');
+      } else {
+        _yl_modelsCache = null;
+        setStatus(false, '❌ ' + (data.error || 'Invalid API key'));
+      }
+    } catch(e) {
+      _yl_modelsCache = null;
+      setStatus(false, '❌ Server unreachable — is the backend running?');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '↻ Test Connection';
+    }
+  });
+
+  // ── Load existing config ────────────────────────────
   chrome.storage.local.get('yl_llm', function(d) {
     var c = d.yl_llm || {};
     if (c.provider && PROVIDERS[c.provider]) providerSel.value = c.provider;
     refreshProviderUI(true);
-    if (c.model) modelInput.value = c.model;
-    if (c.base_url) document.getElementById('yl-base-url').value = c.base_url;
     if (c.api_key) document.getElementById('yl-api-key').value = c.api_key;
-    if (!c.model) refreshProviderUI(false);
+    if (c.base_url) document.getElementById('yl-base-url').value = c.base_url;
   });
 
   document.getElementById('yl-settings-back').addEventListener('click', showHomeView);
 
   document.getElementById('yl-settings-save').addEventListener('click', function() {
     var provider = providerSel.value;
-    var model = modelInput.value.trim();
     var apiKey = document.getElementById('yl-api-key').value.trim();
     var baseUrl = (document.getElementById('yl-base-url').value || '').trim();
     var status = document.getElementById('yl-settings-status');
 
     function err(msg) { status.textContent = msg; status.className = 'yl-status yl-status-err'; }
-    if (!model) { err('Enter a model name.'); return; }
+
     if (!apiKey) { err('Enter your API key.'); return; }
     if (PROVIDERS[provider].needsBase && !baseUrl) { err('Custom provider needs a base URL.'); return; }
 
+    // Get selected model (optional)
+    var model = '';
+    if (provider === 'custom') {
+      model = (document.getElementById('yl-model-custom') || {}).value || '';
+    } else if (_yl_modelsCache) {
+      var selected = document.querySelector('#yl-model-list-container .yl-model-selected');
+      if (selected) model = selected.dataset.modelId || '';
+    } else {
+      // re-saving without testing — read previous model from storage
+      chrome.storage.local.get('yl_llm', function(prev) {
+        model = (prev.yl_llm && prev.yl_llm.model) || '';
+        doSave(model, provider, apiKey, baseUrl, status);
+      });
+      return; // doSave called async
+    }
+
+    doSave(model, provider, apiKey, baseUrl, status);
+  });
+
+  function doSave(model, provider, apiKey, baseUrl, status) {
     var cfg = {
       provider: provider,
       base_url: baseUrl,
@@ -268,11 +376,11 @@ function showModelSettingsView() {
       api_key: apiKey
     };
     chrome.storage.local.set({ yl_llm: cfg }, function() {
-      status.textContent = 'Saved. Exercises will use ' + model + '.';
+      status.textContent = model ? 'Saved. Using ' + model + '.' : 'Saved. Backend will use default model.';
       status.className = 'yl-status yl-status-ok';
       setTimeout(showHomeView, 900);
     });
-  });
+  }
 }
 
 
