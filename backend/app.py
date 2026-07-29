@@ -18,7 +18,7 @@ from providers import test_connection as prov_test_connection, get_adapter
 
 load_dotenv()
 
-app = FastAPI(title="YT-Learn")
+app = FastAPI(title="Praxis")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +46,7 @@ BASE_URL = os.getenv("OPENAI_BASE_URL", "https://generativelanguage.googleapis.c
 CACHE_TTL = 86400  # 24 hours
 GEN_TIMEOUT = 60   # fail fast; a hung call should never cost minutes
 
-# Domains YT-Learn currently serves. The category label from the LLM
+# Domains Praxis currently serves. The category label from the LLM
 # guides this filter, but teachability_score does the heavy gating.
 ACTIVE_CATEGORIES = {
     "coding", "software", "technical", "data", "design",
@@ -590,7 +590,7 @@ async def generate_experiment(
                 msg="bypassing category gate — high-scoring content",
                 teachability_score=teach_score, category=category)
         else:
-            domain_hint = f"YT-Learn doesn't support '{category}' yet."
+            domain_hint = f"Praxis doesn't support '{category}' yet."
             result = {
                 "status": "blocked",
                 "reason": reason or domain_hint,

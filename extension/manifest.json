@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "YT-Learn: Learn by Doing",
+  "name": "Praxis: Turn knowledge into skill",
   "version": "0.1.0",
-  "description": "Get a 5-minute micro-experiment from any YouTube video — personalised to your goal, applied to your project.",
+  "description": "Get a hands-on exercise from any YouTube video — built from what the video actually teaches.",
   "permissions": ["storage"],
   "host_permissions": [
     "http://localhost:8003/*",
@@ -10,7 +10,7 @@
     "https://youtube.com/*"
   ],
   "action": {
-    "default_title": "YT-Learn",
+    "default_title": "Praxis",
     "default_icon": {
       "128": "icons/icon128.png"
     }

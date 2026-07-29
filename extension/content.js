@@ -1,4 +1,4 @@
-// ─── YT-Learn Content Script ─────────────────────────
+// ─── Praxis Content Script ─────────────────────────
 // Inject button, handle overlay, fetch transcript, call backend.
 
 const BACKEND = 'http://localhost:8003';
@@ -96,7 +96,7 @@ var _yl_pollTimer = null;
 var _yl_obs = null;
 
 function injectButton() {
-  if (document.getElementById('yt-learn-btn')) return true;
+  if (document.getElementById('praxis-btn')) return true;
   if (window.location.pathname !== '/watch') return false;
 
   var target = document.querySelector('#top-level-buttons-computed');
@@ -110,7 +110,7 @@ function injectButton() {
         var root = document.body || document.documentElement;
         if (root) {
           _yl_obs = new MutationObserver(function() {
-            if (document.querySelector('#top-level-buttons-computed') && !document.getElementById('yt-learn-btn')) {
+            if (document.querySelector('#top-level-buttons-computed') && !document.getElementById('praxis-btn')) {
               injectButton();
             }
           });
@@ -123,7 +123,7 @@ function injectButton() {
         var tries = 0;
         _yl_pollTimer = setInterval(function() {
           tries++;
-          if (document.getElementById('yt-learn-btn') || tries > 18) {
+          if (document.getElementById('praxis-btn') || tries > 18) {
             clearInterval(_yl_pollTimer);
             _yl_pollTimer = null;
             return;
@@ -140,9 +140,9 @@ function injectButton() {
   if (_yl_pollTimer) { clearInterval(_yl_pollTimer); _yl_pollTimer = null; }
 
   const btn = document.createElement('button');
-  btn.id = 'yt-learn-btn';
+  btn.id = 'praxis-btn';
   btn.className = 'yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--mono yt-spec-button-shape-next--size-m';
-  btn.innerHTML = '<div class="yt-learn-btn-inner"><span>📚</span> Learn Lab</div>';
+  btn.innerHTML = '<div class="praxis-btn-inner"><span>📚</span> Praxis</div>';
   btn.addEventListener('click', openOverlay);
   target.appendChild(btn);
   return true;
@@ -153,17 +153,17 @@ let overlay = null;
 function openOverlay() {
   if (overlay) { overlay.remove(); overlay = null; return; }
   overlay = document.createElement('div');
-  overlay.id = 'yt-learn-overlay';
+  overlay.id = 'praxis-overlay';
   overlay.innerHTML = `
-    <div id="yt-learn-panel">
-      <button id="yt-learn-settings" title="Model settings">⚙️</button>
-      <button id="yt-learn-close">×</button>
-      <div id="yt-learn-views"></div>
+    <div id="praxis-panel">
+      <button id="praxis-settings" title="Model settings">⚙️</button>
+      <button id="praxis-close">×</button>
+      <div id="praxis-views"></div>
     </div>
   `;
   document.body.appendChild(overlay);
-  document.getElementById('yt-learn-close').addEventListener('click', closeOverlay);
-  document.getElementById('yt-learn-settings').addEventListener('click', showModelSettingsView);
+  document.getElementById('praxis-close').addEventListener('click', closeOverlay);
+  document.getElementById('praxis-settings').addEventListener('click', showModelSettingsView);
   overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
   showHomeView();
 }
@@ -191,7 +191,7 @@ function closeOverlay() { if (overlay) { overlay.remove(); overlay = null; } }
 var _yl_modelsCache = null; // { provider: [{id, name}], default_model } from last test
 
 function showModelSettingsView() {
-  const views = document.getElementById('yt-learn-views');
+  const views = document.getElementById('praxis-views');
   if (!views) return;
 
   var providerOptions = Object.keys(PROVIDERS).map(function(k) {
@@ -199,8 +199,8 @@ function showModelSettingsView() {
   }).join('');
 
   views.innerHTML = `
-    <div class="yt-learn-step">Model settings</div>
-    <p class="yt-learn-sub">Exercises run on your own API key. It's stored only in this browser and sent only to your YT-Learn backend — never anywhere else.</p>
+    <div class="praxis-step">Model settings</div>
+    <p class="praxis-sub">Exercises run on your own API key. It's stored only in this browser and sent only to your Praxis backend — never anywhere else.</p>
 
     <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Provider</label>
     <select id="yl-provider" class="yl-input">${providerOptions}</select>
@@ -398,7 +398,7 @@ function parseSteps(text) {
 
 function showExperimentView(userId, videoUrl) {
   if (!videoUrl) videoUrl = window.location.href;
-  const views = document.getElementById('yt-learn-views');
+  const views = document.getElementById('praxis-views');
   if (!views) return;
 
   views.innerHTML = `
@@ -478,14 +478,14 @@ function showExperimentView(userId, videoUrl) {
       currentExpId = cached.experiment_id;
       document.getElementById('yl-generate').classList.remove('hidden');
       document.getElementById('yl-generate').textContent = '↻ Try Again';
-      console.log('[YT-Learn] rendered from cache');
+      console.log('[Praxis] rendered from cache');
       return;
     }
     // Check for cached blocked result
     loadCachedBlocked(videoUrl, userId).then(function(blocked) {
       if (blocked) {
         renderBlockedView(blocked, videoUrl, userId);
-        console.log('[YT-Learn] rendered blocked from cache');
+        console.log('[Praxis] rendered blocked from cache');
         return;
       }
       // No cache — auto-generate immediately
@@ -923,13 +923,13 @@ async function getTranscript(videoUrl, opts) {
   var cached = await new Promise(function(r) {
     chrome.storage.local.get(TC_PREFIX + videoId, function(d) { r(d[TC_PREFIX + videoId] ? d[TC_PREFIX + videoId].text : null); });
   });
-  if (cached) { console.log('[YT-Learn] transcript from cache'); return cached; }
-  console.log('[YT-Learn] trying injectAndFetch for ' + videoId);
+  if (cached) { console.log('[Praxis] transcript from cache'); return cached; }
+  console.log('[Praxis] trying injectAndFetch for ' + videoId);
   var text = await injectAndFetch(videoId, 12);
-  if (text) { console.log('[YT-Learn] injectAndFetch got', text.length, 'chars'); cacheTranscript(videoId, text); return text; }
-  console.log('[YT-Learn] injectAndFetch returned null');
+  if (text) { console.log('[Praxis] injectAndFetch got', text.length, 'chars'); cacheTranscript(videoId, text); return text; }
+  console.log('[Praxis] injectAndFetch returned null');
   if (allowClick) {
-    console.log('[YT-Learn] trying click fallback');
+    console.log('[Praxis] trying click fallback');
     text = await extractTranscriptByClick();
     if (text) cacheTranscript(videoId, text);
     return text;
@@ -963,7 +963,7 @@ function injectAndFetch(videoId, timeoutSec) {
 // ─── Click transcript fallback ────────────────────────────
 
 async function extractTranscriptByClick() {
-  console.log('[YT-Learn] transcript click fallback');
+  console.log('[Praxis] transcript click fallback');
   var panel = document.querySelector('ytd-transcript-body-renderer');
   var isOpen = panel && panel.offsetParent !== null;
   if (isOpen) {
@@ -981,7 +981,7 @@ async function extractTranscriptByClick() {
     }
   }
   if (!btn && !isOpen) return null;
-  var overlayEl = document.getElementById('yt-learn-overlay');
+  var overlayEl = document.getElementById('praxis-overlay');
   if (overlayEl) overlayEl.style.display = 'none';
   await sleep(100);
   if (!isOpen && btn) { btn.click(); await sleep(3000); }
@@ -1010,8 +1010,8 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 function startPrefetch() {
   if (window.location.pathname !== '/watch') return;
   prefetchTranscript(window.location.href).then(function(text) {
-    if (text) console.log('[YT-Learn] prefetched transcript:', text.length, 'chars');
-    else console.log('[YT-Learn] prefetch: no transcript');
+    if (text) console.log('[Praxis] prefetched transcript:', text.length, 'chars');
+    else console.log('[Praxis] prefetch: no transcript');
   });
 }
 
@@ -1019,7 +1019,7 @@ function escapeHtml(s) { var d = document.createElement('div'); d.textContent = 
 
 function sendSignal(backend, userId, signalType, value, experimentId) {
   fetch(backend + '/api/signal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, signal_type: signalType, value: value, experiment_id: experimentId }) }).catch(function() {});
-  console.log('[YT-Learn] signal:', signalType, value);
+  console.log('[Praxis] signal:', signalType, value);
 }
 
 // ─── SPA navigation ───────────────────────────────────────

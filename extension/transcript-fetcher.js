@@ -1,4 +1,4 @@
-// ─── YT-Learn: injected transcript fetcher ─────────────────
+// ─── Praxis: injected transcript fetcher ─────────────────
 // Loaded via <script src="chrome-extension://..."> so YouTube's
 // CSP allows execution (inline script injection is blocked).
 // Reads videoId from its own script tag data-video-id attribute.

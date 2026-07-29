@@ -1,10 +1,10 @@
-/* ─── YT-Learn Button ───────────────────────────── */
-#yt-learn-btn {
+/* ─── Praxis Button ───────────────────────────── */
+#praxis-btn {
   display: inline-flex !important;
   align-items: center !important;
 }
 
-.yt-learn-btn-inner {
+.praxis-btn-inner {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -15,7 +15,7 @@
 }
 
 /* ─── Overlay ────────────────────────────────────── */
-#yt-learn-overlay {
+#praxis-overlay {
   position: fixed;
   inset: 0;
   z-index: 9999;
@@ -25,7 +25,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-#yt-learn-panel {
+#praxis-panel {
   width: 420px;
   max-width: 95vw;
   height: 100vh;
@@ -37,7 +37,7 @@
   position: relative;
 }
 
-#yt-learn-close {
+#praxis-close {
   position: sticky;
   top: 0;
   float: right;
@@ -50,7 +50,7 @@
   line-height: 1;
   z-index: 1;
 }
-#yt-learn-close:hover { color: #333; }
+#praxis-close:hover { color: #333; }
 
 /* ─── Goal input ─────────────────────────────────── */
 .yl-goal-label {
@@ -323,12 +323,12 @@
   border-radius: 6px;
 }
 /* Add to your extension stylesheet — settings gear + select styling */
-#yt-learn-settings {
+#praxis-settings {
   position: absolute; top: 10px; right: 44px;
   background: none; border: none; font-size: 16px;
   cursor: pointer; opacity: 0.6;
 }
-#yt-learn-settings:hover { opacity: 1; }
+#praxis-settings:hover { opacity: 1; }
 select.yl-input { appearance: auto; }
 
 /* ─── Model selector (BYOK settings) ────────────────── */
