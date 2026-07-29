@@ -2,15 +2,31 @@
 #praxis-btn {
   display: inline-flex !important;
   align-items: center !important;
+  justify-content: center !important;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--yt-spec-badge-chip-grey-border, #d9d9d9) !important;
+  border-radius: 18px !important;
+  background: var(--yt-spec-badge-chip-grey, rgba(0,0,0,0.05)) !important;
+  cursor: pointer;
+  outline: none !important;
+  font-family: 'Roboto', Arial, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+#praxis-btn:hover {
+  background: var(--yt-spec-badge-chip-grey-hover, rgba(0,0,0,0.1)) !important;
 }
 
 .praxis-btn-inner {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 0 4px;
-  font-size: 14px;
-  font-weight: 500;
   white-space: nowrap;
 }
 

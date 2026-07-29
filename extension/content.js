@@ -142,7 +142,7 @@ function injectButton() {
   const btn = document.createElement('button');
   btn.id = 'praxis-btn';
   btn.className = 'yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--mono yt-spec-button-shape-next--size-m';
-  btn.innerHTML = '<div class="praxis-btn-inner"><span>📚</span> Praxis</div>';
+  btn.innerHTML = '<div class="praxis-btn-inner"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex-shrink:0;vertical-align:middle"><rect x="2" y="3" width="16" height="4" rx="1.5" fill="#22c55e"/><rect x="2" y="8" width="16" height="4" rx="1.5" fill="#ef4444"/><rect x="2" y="13" width="16" height="4" rx="1.5" fill="#3b82f6"/></svg> Praxis</div>';
   btn.addEventListener('click', openOverlay);
   target.appendChild(btn);
   return true;
