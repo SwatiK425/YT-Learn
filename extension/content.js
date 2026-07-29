@@ -428,7 +428,6 @@ function showExperimentView(userId, videoUrl) {
         <div class="yl-ex-section">
           <div class="yl-ex-title">Your exercise</div>
           <div id="yl-steps"></div>
-          <div class="yl-time-badge">⏱️ 3 min</div>
           <div id="yl-done-wrap" class="hidden" style="margin-top:10px;">
             <button id="yl-mark-done" class="yl-btn yl-btn-secondary" style="width:100%;font-size:12px;">✓ Mark complete</button>
           </div>
@@ -441,11 +440,13 @@ function showExperimentView(userId, videoUrl) {
           <button class="yl-retry-pill" data-reason="wrong_topic">🎯 Wrong Topic</button>
         </div>
 
+        <!-- difficulty row commented out — keeping only mark-complete + fb thumbs
         <div class="yl-difficulty-row" id="yl-diff-row" style="margin-top:8px;display:flex;gap:6px;">
           <button class="yl-diff-btn" data-diff="too_easy">😴 Too Easy</button>
           <button class="yl-diff-btn" data-diff="just_right">👍 Just Right</button>
           <button class="yl-diff-btn" data-diff="too_hard">💪 Too Hard</button>
         </div>
+        -->
 
         <div class="yl-fb-wrap">
           <details>
@@ -548,7 +549,7 @@ function renderExerciseFromCache(cached, userId, videoUrl) {
   }
   document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(cached.experiment || '');
   wireCheckboxes(userId, currentExpId);
-  wireDifficultyButtons(userId, currentExpId);
+  //wireDifficultyButtons(userId, currentExpId);
   wireRetryPills(userId, currentExpId, videoUrl);
   generateCount = 1;
   document.getElementById('yl-generate').textContent = '↻ Try Again';
@@ -739,7 +740,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
       document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(donePayload.experiment || '');
 
       wireCheckboxes(userId, expId);
-      wireDifficultyButtons(userId, expId);
+      //wireDifficultyButtons(userId, expId);
       wireRetryPills(userId, expId, videoUrl);
 
       skelEl.classList.add('hidden');
@@ -784,7 +785,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
     }
     document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(data.experiment);
     wireCheckboxes(userId, expId);
-    wireDifficultyButtons(userId, expId);
+    //wireDifficultyButtons(userId, expId);
     wireRetryPills(userId, expId, videoUrl);
     skelEl.classList.add('hidden');
     contentEl.classList.remove('hidden');
@@ -840,6 +841,7 @@ function wireCheckboxes(userId, expId) {
   }
 }
 
+/*
 function wireDifficultyButtons(userId, expId) {
   var dr = document.getElementById('yl-diff-row');
   if (!dr) return;
@@ -854,6 +856,7 @@ function wireDifficultyButtons(userId, expId) {
     });
   });
 }
+*/
 
 function wireRetryPills(userId, expId, videoUrl) {
   var rr = document.getElementById('yl-retry-row');

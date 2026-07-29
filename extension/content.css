@@ -189,6 +189,7 @@
 }
 
 /* Time badge */
+/* .yl-time-badge removed — exercises no longer time-bound
 .yl-time-badge {
   display: inline-block;
   font-size: 11.5px;
@@ -199,8 +200,10 @@
   border-radius: 10px;
   margin-top: 8px;
 }
+*/
 
 /* ─── Difficulty buttons ─────────────────────────────────── */
+/* .yl-diff-btn commented out — difficulty row removed
 .yl-diff-btn {
   flex: 1;
   font-size: 12px;
@@ -224,6 +227,7 @@
   background: #eef2ff;
   color: #4338ca;
 }
+*/
 
 /* ─── Retry pills (Try Again micro-question) ─────────────── */
 .yl-retry-pill {
