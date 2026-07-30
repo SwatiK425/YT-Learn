@@ -193,19 +193,30 @@ class SuggestRequest(BaseModel):
 
 class SuggestResponse(BaseModel):
     experiment_id: str
-    principle: str = ""  # backward compat: maps from chosen_insight
-    experiment: str
+    principle: str = ""
+    experiment: str = ""  # backward compat — populated from steps with newlines
+    steps: list[str] = []
+    title: str = ""
+    duration: str = ""
+    challenge_type: str = ""
     why_it_matters: str = ""
-    candidates: list[dict] = []  # backward compat: maps from five_insights
-    # New pipeline fields
+    candidates: list[dict] = []
     main_problem: str = ""
     creator_thesis: str = ""
     chosen_insight: str = ""
     importance_score: int = 0
-    done_criteria: str = ""
+    done_criteria: str = ""  # backward compat — populated from done_criteria_list with newlines
+    done_criteria_list: list[str] = []
     five_insights: list[dict] = []
     selection_reasoning: dict = {}
     cached: bool = False
+
+    def model_post_init(self, __context):
+        if not self.experiment and self.steps:
+            self.experiment = "\n".join(self.steps)
+        if not self.done_criteria and self.done_criteria_list:
+            self.done_criteria = "\n".join(self.done_criteria_list)
+        return super().model_post_init(__context)
 
 class FeedbackRequest(BaseModel):
     experiment_id: str
@@ -503,9 +514,22 @@ E. Can I point to the specific idea in the video that this challenge exercises?
 
 Return ONLY valid JSON — no extra text:
 {{
-  "experiment": "Numbered steps (3-5), each starting with an action verb, newline-separated",
-  "done_criteria": "Clear, measurable proof of completion (e.g., a specific audit table, benchmark score, before/after metric, or structured output artifact)"
-  "why_it_matters": "One sentence connecting this to real-world application"
+  "title": "Short, memorable name for this challenge (2-6 words)",
+  "steps": [
+    "Step 1: action verb + specific thing to do",
+    "Step 2: action verb + specific thing to do",
+    "Step 3: action verb + specific thing to do",
+    "Step 4 (optional): action verb + specific thing to do",
+    "Step 5 (optional): action verb + specific thing to do"
+  ],
+  "done_criteria": [
+    "Criterion 1: what success looks like — measurable",
+    "Criterion 2 (optional): another check",
+    "Criterion 3 (optional): another check"
+  ],
+  "why_it_matters": "One sentence connecting this to real-world application",
+  "duration": "Estimated time (e.g., '15 min', '30 min', '1 hour')",
+  "challenge_type": "One of: build | analyze | debug | refactor | practice | experiment | design | audit"
 }}"""
 
 
@@ -675,38 +699,58 @@ async def generate_experiment(
     for attempt in range(2):
         text = await _llm_call(llm, system, user, 0.7, 100000, trace_id=trace_id, call_label=f"stage2_exercise_attempt{attempt}")
         parsed = parse_json_lenient(text)
-        if not parsed or not parsed.get("experiment"):
+        if not parsed or (not parsed.get("experiment") and not parsed.get("steps")):
             last_err = f"Unparseable exercise ({len(text)} chars)"
             _trace(trace_id, "pipeline", "retry", reason=last_err, attempt=attempt)
             continue
 
-        verdict = critic_exercise(parsed["experiment"])
+        verdict_text = parsed.get("experiment") or "\n".join(parsed.get("steps", []))
+        verdict = critic_exercise(verdict_text)
         _trace(trace_id, "critic", verdict["pass"] and "pass" or "reject",
             attempt=attempt,
             reason=verdict.get("reason", ""),
             exercise_len=len(parsed.get("experiment", "")),
         )
         if verdict["pass"]:
-            parsed.setdefault("done_criteria", "")
             parsed.setdefault("why_it_matters", "")
             parsed.setdefault("principle", pareto)
+            steps = parsed.get("steps", [])
+            if not steps and parsed.get("experiment"):
+                if isinstance(parsed["experiment"], str):
+                    steps = [s.strip() for s in parsed["experiment"].split("\n") if s.strip()]
+                elif isinstance(parsed["experiment"], list):
+                    steps = parsed["experiment"]
+            done_criteria_list = parsed.get("done_criteria_list", [])
+            dc_raw = parsed.get("done_criteria")
+            if not done_criteria_list and dc_raw:
+                if isinstance(dc_raw, list):
+                    done_criteria_list = dc_raw
+                elif isinstance(dc_raw, str):
+                    done_criteria_list = [s.strip() for s in dc_raw.split("\n") if s.strip()]
+            done_criteria_str = "\n".join(done_criteria_list) if done_criteria_list else (dc_raw if isinstance(dc_raw, str) else "")
+            experiment_str = "\n".join(steps) if steps else (parsed.get("experiment", "") if isinstance(parsed.get("experiment"), str) else "")
             # Compose full result
             result = {
                 "principle": pareto,
-                "experiment": parsed["experiment"],
+                "experiment": experiment_str,
+                "steps": steps,
+                "title": parsed.get("title", ""),
+                "duration": parsed.get("duration", ""),
+                "challenge_type": parsed.get("challenge_type", ""),
                 "why_it_matters": parsed.get("why_it_matters", ""),
                 "candidates": analysis.get("insights", []),
                 "main_problem": analysis.get("main_problem", ""),
                 "creator_thesis": analysis.get("creator_thesis", ""),
                 "chosen_insight": pareto,
                 "importance_score": 0,
-                "done_criteria": parsed.get("done_criteria", ""),
+                "done_criteria": done_criteria_str,
+                "done_criteria_list": done_criteria_list,
                 "five_insights": analysis.get("insights", []),
                 "selection_reasoning": {"why_best": analysis.get("pareto_why", ""), "why_others_less_important": []},
             }
             _trace(trace_id, "pipeline", "end",
                 status="success",
-                exercise_length=len(parsed["experiment"]),
+                exercise_length=len(experiment_str),
                 model=llm.model,
                 elapsed_sec=round((_pdt_now() - _pipeline_start).total_seconds(), 1))
             return result

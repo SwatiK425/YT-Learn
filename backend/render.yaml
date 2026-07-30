@@ -9,5 +9,5 @@ services:
         sync: false
       - key: OPENAI_BASE_URL
         value: https://opencode.ai/zen/v1
-      - key: OPENAI_MODEL
+      - key: MODEL
         value: nemotron-3-ultra-free

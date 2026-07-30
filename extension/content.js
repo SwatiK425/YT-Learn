@@ -92,52 +92,31 @@ function saveCachedBlocked(videoUrl, userId, data) {
 }
 
 // ─── Inject button into YouTube toolbar ───────────────
-var _yl_pollTimer = null;
-var _yl_obs = null;
 
-function injectButton() {
-  if (document.getElementById('praxis-btn')) return true;
-  if (window.location.pathname !== '/watch') return false;
+function findToolbar() {
+  // Look for #top-level-buttons-computed in the main DOM.
+  var el = document.querySelector('#top-level-buttons-computed');
+  if (el) return el;
 
-  var target = document.querySelector('#top-level-buttons-computed');
-  if (!target) {
-    // Toolbar not ready yet — set up both observer AND poll fallback
-    if (!window._yl_injecting) {
-      window._yl_injecting = true;
-
-      // MutationObserver catches toolbar the instant it renders
-      if (!_yl_obs) {
-        var root = document.body || document.documentElement;
-        if (root) {
-          _yl_obs = new MutationObserver(function() {
-            if (document.querySelector('#top-level-buttons-computed') && !document.getElementById('praxis-btn')) {
-              injectButton();
-            }
-          });
-          _yl_obs.observe(root, { childList: true, subtree: true });
-        }
-      }
-
-      // Poll fallback — retries every 800ms up to 15s in case observer misses it
-      if (!_yl_pollTimer) {
-        var tries = 0;
-        _yl_pollTimer = setInterval(function() {
-          tries++;
-          if (document.getElementById('praxis-btn') || tries > 18) {
-            clearInterval(_yl_pollTimer);
-            _yl_pollTimer = null;
-            return;
-          }
-          injectButton();
-        }, 800);
-      }
+  // Also check inside any open shadow root that might be the
+  // ytd-menu-renderer or its parent.  We iterate ALL elements
+  // once, not recursively, to avoid O(n²) on large pages.
+  var all = document.querySelectorAll('*');
+  for (var i = 0, len = all.length; i < len; i++) {
+    var sr = all[i].shadowRoot;
+    if (sr && sr.querySelector('#top-level-buttons-computed')) {
+      return sr.querySelector('#top-level-buttons-computed');
     }
-    return false;
   }
+  return null;
+}
 
-  // Clean up injection machinery once we succeed
-  if (_yl_obs) { _yl_obs.disconnect(); _yl_obs = null; }
-  if (_yl_pollTimer) { clearInterval(_yl_pollTimer); _yl_pollTimer = null; }
+function tryInject() {
+  if (document.getElementById('praxis-btn')) return;
+  if (window.location.pathname !== '/watch') return;
+
+  var target = findToolbar();
+  if (!target) return;
 
   const btn = document.createElement('button');
   btn.id = 'praxis-btn';
@@ -145,7 +124,6 @@ function injectButton() {
   btn.innerHTML = '<div class="praxis-btn-inner"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex-shrink:0;vertical-align:middle"><rect x="2" y="3" width="16" height="4" rx="1.5" fill="#22c55e"/><rect x="2" y="8" width="16" height="4" rx="1.5" fill="#ef4444"/><rect x="2" y="13" width="16" height="4" rx="1.5" fill="#3b82f6"/></svg> Praxis</div>';
   btn.addEventListener('click', openOverlay);
   target.appendChild(btn);
-  return true;
 }
 
 let overlay = null;
@@ -168,15 +146,20 @@ function openOverlay() {
   showHomeView();
 }
 
-// Route straight to exercise view. Profile is auto-created on first run.
+// Route straight to exercise view if API key is configured, otherwise show settings.
 function showHomeView() {
   var videoUrl = window.location.href;
-  chrome.storage.local.get('yl_profile', function(data) {
+  chrome.storage.local.get(['yl_profile', 'yl_llm'], function(data) {
     var profile = data.yl_profile;
     if (!profile) {
       // First visit — auto-create a userId silently
       profile = { user_id: 'u_' + Date.now(), role: '', goal: '' };
       chrome.storage.local.set({ yl_profile: profile });
+    }
+    // No API key yet — route to settings so the user can configure their provider
+    if (!data.yl_llm || !data.yl_llm.api_key) {
+      showModelSettingsView();
+      return;
     }
     showExperimentView(profile.user_id, videoUrl);
   });
@@ -439,13 +422,24 @@ function showModelSettingsView() {
 
 // ─── Exercise View ────────────────────────────────────
 
-function parseSteps(text) {
-  if (!text) return [];
-  var steps = text.split(/\n+/).map(function(s) { return s.trim(); }).filter(Boolean);
-  if (steps.length <= 1) {
-    steps = text.split(/(?<=[.!?])\s+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 5; });
+function getSteps(data) {
+  if (data.steps && Array.isArray(data.steps) && data.steps.length) return data.steps;
+  if (data.experiment) {
+    if (Array.isArray(data.experiment)) return data.experiment;
+    var s = data.experiment.split(/\n+/).map(function(s) { return s.trim(); }).filter(Boolean);
+    if (s.length <= 1) s = data.experiment.split(/(?<=[.!?])\s+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 5; });
+    return s.slice(0, 6);
   }
-  return steps.slice(0, 6);
+  return [];
+}
+
+function getDoneCriteria(data) {
+  if (data.done_criteria_list && Array.isArray(data.done_criteria_list) && data.done_criteria_list.length) return data.done_criteria_list;
+  if (data.done_criteria) {
+    if (Array.isArray(data.done_criteria)) return data.done_criteria;
+    return data.done_criteria.split(/\n+/).map(function(s) { return s.trim(); }).filter(Boolean);
+  }
+  return [];
 }
 
 function showExperimentView(userId, videoUrl) {
@@ -454,11 +448,6 @@ function showExperimentView(userId, videoUrl) {
   if (!views) return;
 
   views.innerHTML = `
-    <!-- API key input (coming soon - uncomment when ready)
-    <label style="font-size:13px;color:#888;display:block;margin-top:12px;">Your API key</label>
-    <input id="yl-api-key-self" class="yl-input" type="password" placeholder="sk-..." autocomplete="off" />
-    -->
-
     <div id="yl-status" class="yl-status hidden"></div>
 
     <button id="yl-generate" class="yl-btn yl-btn-primary hidden" style="display:none;">↻ Try Again</button>
@@ -472,6 +461,7 @@ function showExperimentView(userId, videoUrl) {
       </div>
 
       <div id="yl-content" class="hidden">
+        <div id="yl-title" class="yl-title"></div>
         <div id="yl-insight" class="yl-insight"></div>
         <div id="yl-finish-line" class="yl-finish-line hidden">
           <span class="yl-fl-label">What you'll have:</span>
@@ -480,6 +470,10 @@ function showExperimentView(userId, videoUrl) {
         <div class="yl-ex-section">
           <div class="yl-ex-title">Your exercise</div>
           <div id="yl-steps"></div>
+          <div id="yl-done-criteria" class="hidden" style="margin-top:10px;">
+            <div class="yl-dc-label">Done criteria</div>
+            <ul id="yl-dc-list" class="yl-dc-list"></ul>
+          </div>
           <div id="yl-done-wrap" class="hidden" style="margin-top:10px;">
             <button id="yl-mark-done" class="yl-btn yl-btn-secondary" style="width:100%;font-size:12px;">✓ Mark complete</button>
           </div>
@@ -491,14 +485,6 @@ function showExperimentView(userId, videoUrl) {
           <button class="yl-retry-pill" data-reason="too_hard">💪 Too Hard</button>
           <button class="yl-retry-pill" data-reason="wrong_topic">🎯 Wrong Topic</button>
         </div>
-
-        <!-- difficulty row commented out — keeping only mark-complete + fb thumbs
-        <div class="yl-difficulty-row" id="yl-diff-row" style="margin-top:8px;display:flex;gap:6px;">
-          <button class="yl-diff-btn" data-diff="too_easy">😴 Too Easy</button>
-          <button class="yl-diff-btn" data-diff="just_right">👍 Just Right</button>
-          <button class="yl-diff-btn" data-diff="too_hard">💪 Too Hard</button>
-        </div>
-        -->
 
         <div class="yl-fb-wrap">
           <details>
@@ -599,27 +585,44 @@ function showExperimentView(userId, videoUrl) {
 }
 
 // ─── Render from cache (skips form, no API call) ─────────
-function renderExerciseFromCache(cached, userId, videoUrl) {
-  currentExpId = cached.experiment_id;
+function renderExerciseFromResult(data, userId, videoUrl) {
+  var expId = data.experiment_id;
   document.getElementById('yl-result').classList.remove('hidden');
   document.getElementById('yl-skeleton').classList.add('hidden');
   document.getElementById('yl-content').classList.remove('hidden');
-  document.getElementById('yl-insight').textContent = cached.principle || '';
-  if (cached.why_it_matters) {
-    document.getElementById('yl-fl-text').textContent = cached.why_it_matters;
-    document.getElementById('yl-finish-line').classList.remove('hidden');
+
+  var titleEl = document.getElementById('yl-title');
+  if (data.title) {
+    titleEl.textContent = data.title;
+    titleEl.classList.remove('hidden');
+  } else {
+    titleEl.classList.add('hidden');
   }
-  var steps = parseSteps(cached.experiment || '');
+
+  document.getElementById('yl-insight').textContent = data.principle || '';
+  if (data.why_it_matters) {
+    document.getElementById('yl-fl-text').textContent = data.why_it_matters;
+    document.getElementById('yl-finish-line').classList.remove('hidden');
+  } else {
+    document.getElementById('yl-finish-line').classList.add('hidden');
+  }
+
+  var steps = getSteps(data);
   var stepsHtml = '';
   for (var i = 0; i < steps.length; i++) {
     stepsHtml += '<label class="yl-step"><input type="checkbox" /> <span>' + escapeHtml(steps[i]) + '</span></label>';
   }
-  document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(cached.experiment || '');
-  wireCheckboxes(userId, currentExpId);
-  //wireDifficultyButtons(userId, currentExpId);
-  wireRetryPills(userId, currentExpId, videoUrl);
+  document.getElementById('yl-steps').innerHTML = stepsHtml || '';
+
+  wireCheckboxes(userId, expId);
+  wireRetryPills(userId, expId, videoUrl);
   generateCount = 1;
   document.getElementById('yl-generate').textContent = '↻ Try Again';
+}
+
+function renderExerciseFromCache(cached, userId, videoUrl) {
+  currentExpId = cached.experiment_id;
+  renderExerciseFromResult(cached, userId, videoUrl);
 }
 
 // ─── Render blocked / not-supported view ───────────────────
@@ -674,6 +677,12 @@ function parsePartialJSON(buf) {
   var r = {};
   var pm = buf.match(/"principle"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (pm) r.principle = unescapeJsonString(pm[1]);
+  var tm = buf.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (tm) r.title = unescapeJsonString(tm[1]);
+  var dm = buf.match(/"duration"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (dm) r.duration = unescapeJsonString(dm[1]);
+  var cm = buf.match(/"challenge_type"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (cm) r.challenge_type = unescapeJsonString(cm[1]);
   var em = buf.match(/"experiment"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (em) r.experiment = unescapeJsonString(em[1]);
   var wm = buf.match(/"why_it_matters"\s*:\s*"((?:[^"\\]|\\.)*)/);
@@ -732,6 +741,8 @@ async function performGenerate(videoUrl, userId, currentExpId) {
   skelEl.classList.remove('hidden');
   var contentEl = document.getElementById('yl-content');
   contentEl.classList.add('hidden');
+  document.getElementById('yl-title').textContent = '';
+  document.getElementById('yl-title').classList.add('hidden');
   document.getElementById('yl-insight').textContent = '';
   document.getElementById('yl-steps').innerHTML = '';
   document.getElementById('yl-finish-line').classList.add('hidden');
@@ -742,7 +753,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
     const body = { video_url: videoUrl };
     if (transcript) body.transcript = transcript;
     if (llmCfg) body.llm = llmCfg;
-    if (currentExpId) body.force = true; // Try Again must bypass cache
+    if (currentExpId || pendingRetryReason) body.force = true; // Try Again must bypass cache
     if (pendingRetryReason) { body.retry_reason = pendingRetryReason; pendingRetryReason = null; }
 
     // Try streaming first
@@ -774,6 +785,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
             skelEl.classList.add('hidden');
             contentEl.classList.remove('hidden');
           }
+          if (fields.title) document.getElementById('yl-title').textContent = fields.title;
           if (fields.principle) document.getElementById('yl-insight').textContent = fields.principle;
           if (fields.experiment) document.getElementById('yl-steps').textContent = fields.experiment;
         },
@@ -793,31 +805,19 @@ async function performGenerate(videoUrl, userId, currentExpId) {
       }
 
       var expId = donePayload.experiment_id;
-      document.getElementById('yl-insight').textContent = donePayload.principle || '';
-      if (donePayload.why_it_matters) {
-        document.getElementById('yl-fl-text').textContent = donePayload.why_it_matters;
-        document.getElementById('yl-finish-line').classList.remove('hidden');
-      }
-
-      var steps = parseSteps(donePayload.experiment || '');
-      var stepsHtml = '';
-      for (var i = 0; i < steps.length; i++) {
-        stepsHtml += '<label class="yl-step"><input type="checkbox" /> <span>' + escapeHtml(steps[i]) + '</span></label>';
-      }
-      document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(donePayload.experiment || '');
-
-      wireCheckboxes(userId, expId);
-      //wireDifficultyButtons(userId, expId);
-      wireRetryPills(userId, expId, videoUrl);
-
-      skelEl.classList.add('hidden');
-      contentEl.classList.remove('hidden');
+      renderExerciseFromResult(donePayload, userId, videoUrl);
 
       saveCachedExercise(videoUrl, userId, {
         experiment_id: expId,
         principle: donePayload.principle || '',
         experiment: donePayload.experiment || '',
+        steps: donePayload.steps || [],
+        title: donePayload.title || '',
+        duration: donePayload.duration || '',
+        challenge_type: donePayload.challenge_type || '',
         why_it_matters: donePayload.why_it_matters || '',
+        done_criteria: donePayload.done_criteria || '',
+        done_criteria_list: donePayload.done_criteria_list || [],
       });
 
       hideStatus();
@@ -840,28 +840,19 @@ async function performGenerate(videoUrl, userId, currentExpId) {
     }
 
     var expId = data.experiment_id;
-    document.getElementById('yl-insight').textContent = data.principle;
-    if (data.why_it_matters) {
-      document.getElementById('yl-fl-text').textContent = data.why_it_matters;
-      document.getElementById('yl-finish-line').classList.remove('hidden');
-    }
-    var steps = parseSteps(data.experiment);
-    var stepsHtml = '';
-    for (var i = 0; i < steps.length; i++) {
-      stepsHtml += '<label class="yl-step"><input type="checkbox" /> <span>' + escapeHtml(steps[i]) + '</span></label>';
-    }
-    document.getElementById('yl-steps').innerHTML = stepsHtml || escapeHtml(data.experiment);
-    wireCheckboxes(userId, expId);
-    //wireDifficultyButtons(userId, expId);
-    wireRetryPills(userId, expId, videoUrl);
-    skelEl.classList.add('hidden');
-    contentEl.classList.remove('hidden');
+    renderExerciseFromResult(data, userId, videoUrl);
 
     saveCachedExercise(videoUrl, userId, {
       experiment_id: expId,
-      principle: data.principle,
-      experiment: data.experiment,
+      principle: data.principle || '',
+      experiment: data.experiment || '',
+      steps: data.steps || [],
+      title: data.title || '',
+      duration: data.duration || '',
+      challenge_type: data.challenge_type || '',
       why_it_matters: data.why_it_matters || '',
+      done_criteria: data.done_criteria || '',
+      done_criteria_list: data.done_criteria_list || [],
     });
 
     document.getElementById('yl-generate').classList.remove('hidden');
@@ -908,23 +899,6 @@ function wireCheckboxes(userId, expId) {
   }
 }
 
-/*
-function wireDifficultyButtons(userId, expId) {
-  var dr = document.getElementById('yl-diff-row');
-  if (!dr) return;
-  if (dr.dataset.wired === 'true') return;
-  dr.dataset.wired = 'true';
-  dr.querySelectorAll('.yl-diff-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      if (this.dataset.selected === 'true') { this.dataset.selected = 'false'; return; }
-      dr.querySelectorAll('.yl-diff-btn').forEach(function(b) { b.dataset.selected = 'false'; });
-      this.dataset.selected = 'true';
-      sendSignal(BACKEND, userId, 'difficulty', this.dataset.diff, expId);
-    });
-  });
-}
-*/
-
 function wireRetryPills(userId, expId, videoUrl) {
   var rr = document.getElementById('yl-retry-row');
   if (!rr) return;
@@ -941,12 +915,10 @@ function wireRetryPills(userId, expId, videoUrl) {
       document.getElementById('yl-generate').disabled = false;
       document.getElementById('yl-generate').textContent = '↻ Try Again';
       document.getElementById('yl-generate').disabled = true;
-      performGenerate(videoUrl, userId, null, expId);
+      performGenerate(videoUrl, userId, expId);
     });
   });
 }
-
-// ─── Goal auto-fill (REMOVED — no longer personalising exercises) ─────────────────
 
 // ─── Utils ────────────────────────────────────────────────
 
@@ -1089,21 +1061,70 @@ function sendSignal(backend, userId, signalType, value, experimentId) {
   console.log('[Praxis] signal:', signalType, value);
 }
 
-// ─── SPA navigation ───────────────────────────────────────
+// ─── Continuous injection ─────────────────────────────────
+// YouTube is an SPA that renders the button toolbar at
+// unpredictable times and may use Shadow DOM.  We use every
+// available tactic: interval, observer, and navigation events.
 
-var navReady = false;
+console.log('[Praxis] script loaded, pathname=' + window.location.pathname + ' body=' + !!document.body + ' toolbar=' + !!document.querySelector('#top-level-buttons-computed'));
+
+// ─── Listen for icon-click from background service worker ──
+chrome.runtime.onMessage.addListener(function(message) {
+  if (message.action === 'openPraxis') {
+    openOverlay();
+  }
+});
+
+var _yl_injectCount = 0;
+
+function tryInjectWithLog() {
+  _yl_injectCount++;
+  var before = !!document.getElementById('praxis-btn');
+  var tbMain = !!document.querySelector('#top-level-buttons-computed');
+  var shadowTag = null;
+  var allEls = document.querySelectorAll('*');
+  for (var i = 0; i < allEls.length; i++) {
+    if (allEls[i].shadowRoot && allEls[i].shadowRoot.querySelector('#top-level-buttons-computed')) {
+      shadowTag = allEls[i].tagName;
+      break;
+    }
+  }
+  console.log('[Praxis] #' + _yl_injectCount + ' tryInject: btn=' + before + ' #tbc-main=' + tbMain + ' #tbc-shadow=' + (shadowTag || 'none') + ' watch=' + (window.location.pathname === '/watch'));
+  tryInject();
+  console.log('[Praxis] #' + _yl_injectCount + ' result: btn=' + !!document.getElementById('praxis-btn'));
+}
+
+// Primary: keep trying with recursive setTimeout (more reliable than
+// setInterval — never overlaps, always waits 800ms between attempts).
+function keepTrying() {
+  tryInjectWithLog();
+  setTimeout(keepTrying, 800);
+}
+keepTrying();
+
+// Backup: watch the main DOM for toolbar-related changes
+function startObserver() {
+  var obs = new MutationObserver(function() {
+    if (window.location.pathname === '/watch' && !document.getElementById('praxis-btn')) {
+      tryInject();
+    }
+  });
+  var root = document.body || document.documentElement;
+  if (root) obs.observe(root, { childList: true, subtree: true });
+  console.log('[Praxis] observer started');
+}
+startObserver();
+
 function onNav() {
   if (overlay) { overlay.remove(); overlay = null; }
-  // Clean up stale injection machinery from previous page
-  if (_yl_obs) { _yl_obs.disconnect(); _yl_obs = null; }
-  if (_yl_pollTimer) { clearInterval(_yl_pollTimer); _yl_pollTimer = null; }
-  window._yl_injecting = false;
-
   if (window.location.pathname === '/watch') {
-    setTimeout(function() { injectButton(); startPrefetch(); }, 100);
+    startPrefetch();
   }
 }
-document.addEventListener('yt-navigate-finish', function() { navReady = false; setTimeout(function() { navReady = true; onNav(); }, 500); });
-window.addEventListener('popstate', function() { setTimeout(onNav, 1000); });
-window.addEventListener('hashchange', function() { setTimeout(onNav, 1000); });
-if (window.location.pathname === '/watch') setTimeout(function() { injectButton(); startPrefetch(); }, 500);
+
+document.addEventListener('yt-navigate-finish', function() { setTimeout(onNav, 200); });
+window.addEventListener('popstate', function() { setTimeout(onNav, 200); });
+window.addEventListener('hashchange', function() { setTimeout(onNav, 200); });
+
+// Immediate attempt on script load
+if (window.location.pathname === '/watch') { tryInjectWithLog(); startPrefetch(); }
