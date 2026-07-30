@@ -16,6 +16,7 @@ backend/feedback.json
 # Environment
 .env
 backend/.env
+backend/render.yaml     # was moved to repo root for Render Blueprint
 
 # OS
 .DS_Store
