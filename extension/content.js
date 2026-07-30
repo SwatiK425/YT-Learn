@@ -1,7 +1,7 @@
 // ─── Praxis Content Script ─────────────────────────
 // Inject button, handle overlay, fetch transcript, call backend.
 
-const BACKEND = 'http://localhost:8003';
+const BACKEND = 'http://localhost:8003';  // ← change to your Render URL after deploy
 
 // Set by retry pills; consumed by the next performGenerate. Travels in the
 // /api/suggest request body so the regeneration is guaranteed to see it
