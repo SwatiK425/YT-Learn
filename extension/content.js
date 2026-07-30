@@ -212,6 +212,7 @@ function showModelSettingsView() {
 
     <label style="font-size:13px;color:#888;display:block;margin-top:10px;">API key</label>
     <input id="yl-api-key" class="yl-input" type="password" placeholder="sk-... or AIza..." autocomplete="off" />
+    <div id="yl-key-status" style="font-size:11px;color:#666;margin-top:4px;"></div>
 
     <button id="yl-test-connection" class="yl-btn yl-btn-secondary" style="width:100%;margin-top:10px;text-align:center;">
       ↻ Test Connection
@@ -229,6 +230,17 @@ function showModelSettingsView() {
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button id="yl-settings-back" class="yl-btn yl-btn-secondary" style="flex:1;">Back</button>
       <button id="yl-settings-save" class="yl-btn yl-btn-primary" style="flex:2;">Save</button>
+    </div>
+
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #333;">
+      <button id="yl-delete-key" class="yl-btn" style="width:100%;border:1px solid #ef4444;color:#ef4444;background:transparent;font-size:12px;">
+        🗑 Delete saved API key
+      </button>
+      <div id="yl-delete-key-status" class="yl-status hidden" style="margin-top:6px;"></div>
+      <button id="yl-clear-local-settings" class="yl-btn" style="width:100%;border:1px solid #555;color:#888;background:transparent;font-size:12px;margin-top:6px;">
+        🧹 Clear all local data (cache, API key, profile)
+      </button>
+      <div id="yl-clear-local-status" class="yl-status hidden" style="margin-top:6px;"></div>
     </div>
   `;
 
@@ -331,7 +343,14 @@ function showModelSettingsView() {
     var c = d.yl_llm || {};
     if (c.provider && PROVIDERS[c.provider]) providerSel.value = c.provider;
     refreshProviderUI(true);
-    if (c.api_key) document.getElementById('yl-api-key').value = c.api_key;
+    if (c.api_key) {
+      document.getElementById('yl-api-key').value = c.api_key;
+      var masked = c.api_key.length > 8 ? '····' + c.api_key.slice(-4) : '····' + c.api_key.slice(-2);
+      document.getElementById('yl-key-status').textContent = 'Key saved: ' + masked;
+      document.getElementById('yl-key-status').style.color = '#8bc48b';
+    } else {
+      document.getElementById('yl-key-status').textContent = 'No API key saved';
+    }
     if (c.base_url) document.getElementById('yl-base-url').value = c.base_url;
   });
 
@@ -381,6 +400,39 @@ function showModelSettingsView() {
       setTimeout(showHomeView, 900);
     });
   }
+
+  // ── Delete saved API key ──────────────────────────────
+  document.getElementById('yl-delete-key').addEventListener('click', function() {
+    var status = document.getElementById('yl-delete-key-status');
+    status.className = 'yl-status';
+    status.textContent = 'Deleting API key...';
+    chrome.storage.local.get('yl_llm', function(d) {
+      var cfg = d.yl_llm || {};
+      delete cfg.api_key;
+      chrome.storage.local.set({ yl_llm: cfg }, function() {
+        document.getElementById('yl-api-key').value = '';
+        document.getElementById('yl-key-status').textContent = 'No API key saved';
+        document.getElementById('yl-key-status').style.color = '#888';
+        status.textContent = '✓ API key deleted';
+        status.className = 'yl-status yl-status-ok';
+      });
+    });
+  });
+
+  // ── Clear all local data ──────────────────────────────
+  document.getElementById('yl-clear-local-settings').addEventListener('click', function() {
+    var status = document.getElementById('yl-clear-local-status');
+    status.className = 'yl-status';
+    status.textContent = 'Clearing all local data...';
+    chrome.storage.local.clear(function() {
+      status.textContent = '✓ All local data cleared — returning home';
+      status.className = 'yl-status yl-status-ok';
+      // Re-create anonymous profile so the extension still works
+      var profile = { user_id: 'u_' + Date.now(), role: '', goal: '' };
+      chrome.storage.local.set({ yl_profile: profile });
+      setTimeout(showHomeView, 1000);
+    });
+  });
 }
 
 
@@ -459,6 +511,7 @@ function showExperimentView(userId, videoUrl) {
               <textarea id="yl-question" class="yl-input" rows="1" placeholder="What would be more useful? (optional)"></textarea>
               <button id="yl-send-fb" class="yl-btn yl-btn-secondary">Send</button>
               <div id="yl-fb-done" class="hidden yl-status yl-status-ok">Thanks for the feedback!</div>
+              <div id="yl-fb-err" class="hidden yl-status yl-status-err">Could not send feedback. Check connection and try again.</div>
             </div>
           </details>
         </div>
@@ -520,12 +573,26 @@ function showExperimentView(userId, videoUrl) {
   // ─── Feedback ──
   document.getElementById('yl-send-fb')?.addEventListener('click', async function() {
     if (!currentExpId) return;
+    var btn = document.getElementById('yl-send-fb');
+    var done = document.getElementById('yl-fb-done');
+    var err = document.getElementById('yl-fb-err');
+    done.classList.add('hidden');
+    err.classList.add('hidden');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
     var fb = { experiment_id: currentExpId, liked: likedState, question: document.getElementById('yl-question')?.value || null };
     try {
-      await fetch(BACKEND + '/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fb) });
-      document.getElementById('yl-fb-done').classList.remove('hidden');
-      document.getElementById('yl-send-fb').disabled = true;
-    } catch(e) {}
+      var resp = await fetch(BACKEND + '/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fb) });
+      if (!resp.ok) throw new Error('Server returned ' + resp.status);
+      done.classList.remove('hidden');
+      btn.textContent = 'Sent';
+    } catch(e) {
+      err.textContent = 'Could not send feedback. ' + e.message;
+      err.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = 'Send';
+    }
   });
   document.getElementById('yl-like')?.addEventListener('click', function() { likedState = true; this.dataset.selected = 'true'; document.getElementById('yl-dislike').dataset.selected = 'false'; });
   document.getElementById('yl-dislike')?.addEventListener('click', function() { likedState = false; this.dataset.selected = 'true'; document.getElementById('yl-like').dataset.selected = 'false'; });

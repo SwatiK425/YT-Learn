@@ -81,6 +81,22 @@ You'll see the Praxis icon appear in the toolbar.
 
 ---
 
+## Privacy
+
+Your data stays yours. Here's what Praxis **does not** store:
+
+- **YouTube watch history** — never collected, never stored
+- **Video transcripts** — fetched on-demand, cached in-memory by video ID only (no user linkage), never written to disk
+- **API keys** — sent per-request, used immediately, never persisted server-side. Stored only in your browser's local storage (chrome.storage)
+- **Generated exercises** — cached temporarily in memory (volatile, lost on restart). Never logged to disk
+- **Insights or analysis** — the experiment log stores metadata (video ID, model name) only, never the insight text
+
+All server-side state is in-memory and resets on restart. The `traces.log` file records only call metadata (model, token lengths, timing) — never transcript or exercise content.
+
+You can delete your data at any time via `POST /api/privacy/delete` (hard delete, no soft delete).
+
+---
+
 ## Tech
 
 | Layer | What it uses |

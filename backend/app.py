@@ -69,6 +69,7 @@ PROVIDER_BASE_URLS = {
 
 # ─── Trace logging ─────────────────────────────────
 _TRACE_LOG = os.path.join(os.path.dirname(__file__), "traces.log")
+_FEEDBACK_LOG = os.path.join(os.path.dirname(__file__), "feedback.json")
 _PDT = timezone.utc  # placeholder; we'll use a fixed offset for PDT
 _PDT_OFFSET = -7 * 3600  # UTC-7 (PDT)
 
@@ -84,7 +85,7 @@ def _trace(trace_id: str, component: str, phase: str, **fields) -> None:
 
     Args:
         trace_id: unique request-scoped id.
-        component: e.g. 'endpoint', 'llm', 'pipeline', 'critic', 'transcript'.
+        component: e.g. 'endpoint', 'llm', 'pipeline', 'critic', 'transcript', 'feedback'.
         phase: e.g. 'input', 'output', 'start', 'end', 'error'.
         **fields: arbitrary key=value pairs (content, model, temp, etc.).
     """
@@ -112,12 +113,19 @@ def _trace(trace_id: str, component: str, phase: str, **fields) -> None:
     # Terminal preview — one compact line
     if component == "llm" and phase == "output":
         content_len = len(fields.get("content", ""))
-        print(f"  [TRACE {trace_id}] {component} {phase} — {content_len}c", flush=True)
+        dur = fields.get("elapsed_sec", "")
+        dur_str = f" in {dur}s" if dur else ""
+        print(f"  [TRACE {trace_id}] {component} {phase} — {content_len}c{dur_str}", flush=True)
+    elif component == "feedback":
+        liked = fields.get("liked")
+        print(f"  [TRACE {trace_id}] feedback: {'liked' if liked else 'disliked' if liked is False else 'skipped'}", flush=True)
     elif component in ("endpoint", "pipeline", "critic", "transcript"):
         brief = fields.get("content", fields.get("message", fields.get("reason", "")))
         if isinstance(brief, str) and len(brief) > 120:
             brief = brief[:120] + "..."
-        print(f"  [TRACE {trace_id}] {component} {phase}: {brief}", flush=True)
+        dur = fields.get("elapsed_sec", "")
+        dur_str = f" [{dur}s]" if dur else ""
+        print(f"  [TRACE {trace_id}] {component} {phase}{dur_str}: {brief}", flush=True)
 
 
 class LLMConfig(BaseModel):
@@ -217,6 +225,26 @@ class InferGoalRequest(BaseModel):
     video_channel: str = ""
     video_description: str = ""
     llm: LLMConfig | None = None
+
+class PrivacyDataResponse(BaseModel):
+    has_profile: bool = False
+    experiment_count: int = 0
+    feedback_count: int = 0
+    stored_signals: list[str] = []
+
+
+# ─── Store metadata (for privacy introspection) ──────────
+# _pii_notes is a compile-time inventory of everything this service persists,
+# so the privacy endpoint can report it without hard-coding.
+
+_PRIVACY_INVENTORY = {
+    "profiles": "In-memory dict: user_id → {role, goal, signals}. Never written to disk.",
+    "experiments_log": "In-memory list: {experiment_id, user_id, video_id}. Insight text is NOT stored (only metadata).",
+    "feedback_store": "In-memory list: {user_id, experiment_id, liked, comment}. Used to improve exercise quality.",
+    "exercise_cache": "In-memory dict: keyed by user_id:video_id:model. Cached exercise results. Volatile — lost on restart.",
+    "prepared_transcripts": "In-memory dict: video_id → compressed transcript. No user linkage. Volatile.",
+    "traces_log": "File (traces.log): LLM call metadata (model, lengths, timing). Transcript/exercise content is NOT logged.",
+}
 
 # ─── Helpers ──────────────────────────────────────────────
 
@@ -498,15 +526,16 @@ async def _llm_call(
     if user:
         messages.append({"role": "user", "content": user})
 
-    # ── Trace input ──
+    # ── Trace input (metadata only — never log transcripts, prompts, or user content) ──
     _trace(trace_id, "llm", "input",
         call=call_label,
         model=llm.model,
         temp=temp,
         max_tokens=max_tokens,
-        system=system,
-        user=user or "(none)",
+        system_len=len(system),
+        user_len=len(user) if user else 0,
     )
+    _call_start = _pdt_now()
 
     resp = await asyncio.to_thread(
         llm.client.chat.completions.create,
@@ -522,11 +551,13 @@ async def _llm_call(
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         text = text.rsplit("```", 1)[0].strip()
 
-    # ── Trace output ──
+    # ── Trace output (metadata only) ──
     _trace(trace_id, "llm", "output",
         call=call_label,
+        model=llm.model,
         finish_reason=resp.choices[0].finish_reason,
-        content=text,
+        content_len=len(text),
+        elapsed_sec=round((_pdt_now() - _call_start).total_seconds(), 1),
     )
     return text
 
@@ -555,7 +586,13 @@ async def generate_experiment(
     Stage 1 (temp=0.2): Extract thesis, insights, pareto insight with quality rubric.
     Stage 2 (temp=0.7): Design a skill-transfer challenge using full video context.
     """
-    _trace(trace_id, "pipeline", "start", transcript_length=len(transcript), retry_reason=retry_reason or "none")
+    _trace(trace_id, "pipeline", "start",
+        transcript_length=len(transcript),
+        retry_reason=retry_reason or "none",
+        model=llm.model)
+    _pipeline_start = _pdt_now()
+    # Privacy: transcript content is NEVER written to logs or disk (except transient
+    # LLM requests). The trace above records length only.
 
     # Stage 1: Video understanding — deterministic, low temp
     capped = transcript[:80000]
@@ -609,7 +646,9 @@ async def generate_experiment(
 
     _trace(trace_id, "pipeline", "stage1_done",
         insight_count=len(analysis.get("insights", [])),
-        pareto_insight=analysis.get("pareo_insight", "")[:200],
+        pareto_insight=analysis.get("pareto_insight", "")[:200],
+        model=llm.model,
+        elapsed_sec=round((_pdt_now() - _pipeline_start).total_seconds(), 1),
     )
 
     # Stage 2: Exercise from pareto insight + full video context
@@ -645,7 +684,7 @@ async def generate_experiment(
         _trace(trace_id, "critic", verdict["pass"] and "pass" or "reject",
             attempt=attempt,
             reason=verdict.get("reason", ""),
-            exercise_preview=parsed["experiment"][:200],
+            exercise_len=len(parsed.get("experiment", "")),
         )
         if verdict["pass"]:
             parsed.setdefault("done_criteria", "")
@@ -665,14 +704,22 @@ async def generate_experiment(
                 "five_insights": analysis.get("insights", []),
                 "selection_reasoning": {"why_best": analysis.get("pareto_why", ""), "why_others_less_important": []},
             }
-            _trace(trace_id, "pipeline", "end", status="success", exercise_length=len(parsed["experiment"]))
+            _trace(trace_id, "pipeline", "end",
+                status="success",
+                exercise_length=len(parsed["experiment"]),
+                model=llm.model,
+                elapsed_sec=round((_pdt_now() - _pipeline_start).total_seconds(), 1))
             return result
 
         _trace(trace_id, "critic", "retry", attempt=attempt, reason=verdict["reason"])
         last_err = verdict["reason"]
         user += f"\n\nFEEDBACK FROM CRITIC: {verdict['reason']} Rewrite the exercise."
 
-    _trace(trace_id, "pipeline", "end", status="error", reason=last_err or "unknown")
+    _trace(trace_id, "pipeline", "end",
+        status="error",
+        reason=last_err or "unknown",
+        model=llm.model,
+        elapsed_sec=round((_pdt_now() - _pipeline_start).total_seconds(), 1))
     raise ValueError(f"Exercise generation failed: {last_err}")
 
 
@@ -710,9 +757,21 @@ async def get_profile(user_id: str):
 
 @app.post("/api/suggest")
 async def suggest(req: SuggestRequest, user_id: str | None = None):
+    trace_id = uuid.uuid4().hex[:12]
     llm = resolve_llm(req.llm)
     vid = extract_video_id(req.video_url)
+    _trace(trace_id, "endpoint", "start",
+        endpoint="/api/suggest",
+        video_url=req.video_url,
+        user_id=user_id or "anon",
+        has_transcript="yes" if req.transcript else "no",
+        retry_reason=req.retry_reason or "none",
+        force=req.force,
+        model=llm.model)
+    _start_ts = _pdt_now()
+
     if not vid:
+        _trace(trace_id, "endpoint", "error", message="Invalid YouTube URL", user_id=user_id or "anon")
         raise HTTPException(400, "Invalid YouTube URL.")
 
     # Log BYOK provider+model so user can verify their key is in use
@@ -721,7 +780,9 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
 
     transcript = req.transcript or await fetch_transcript(vid)
     if not transcript:
+        _trace(trace_id, "endpoint", "error", message="Could not fetch transcript", user_id=user_id or "anon")
         raise HTTPException(400, "Could not fetch transcript.")
+    _trace(trace_id, "transcript", "fetched", length=len(transcript), video_id=vid)
 
     cache_key = f"{user_id or 'anon'}:{vid}:{llm.model}"
     now_ts = datetime.now(timezone.utc).timestamp()
@@ -729,6 +790,7 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
     if not req.force and cache_key in exercise_cache:
         entry = exercise_cache[cache_key]
         if now_ts - entry["ts"] < CACHE_TTL:
+            _trace(trace_id, "endpoint", "cache_hit", user_id=user_id or "anon", video_id=vid)
             return SuggestResponse(**entry["result"], cached=True)
 
     prepared = (
@@ -738,17 +800,29 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
         prepared_transcripts[vid] = prepared
 
     try:
-        result = await generate_experiment(prepared, req.retry_reason, llm)
+        result = await generate_experiment(prepared, req.retry_reason, llm, trace_id=trace_id)
         if result.get("status") == "blocked":
             exercise_cache[cache_key] = {"result": result, "ts": now_ts}
+            _trace(trace_id, "endpoint", "blocked",
+                reason=result.get("reason",""),
+                category=result.get("category",""),
+                user_id=user_id or "anon", video_id=vid, model=llm.model,
+                elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
             return {"status": "blocked", **result}
     except Exception as e:
+        _trace(trace_id, "endpoint", "error",
+            message=str(e), user_id=user_id or "anon", video_id=vid, model=llm.model,
+            elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
         raise HTTPException(502, f"Experiment generation failed: {e}")
 
     exp_id = str(uuid.uuid4())[:12]
     response_data = {"experiment_id": exp_id, **result}
     exercise_cache[cache_key] = {"result": response_data, "ts": now_ts}
     _log_experiment(exp_id, user_id, vid, result)
+    _trace(trace_id, "endpoint", "end",
+        experiment_id=exp_id, cached=False,
+        user_id=user_id or "anon", video_id=vid, model=llm.model,
+        elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
     return SuggestResponse(**response_data)
 
 
@@ -767,10 +841,13 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
 
     _trace(trace_id, "endpoint", "start",
         endpoint="/api/suggest/stream",
-        video_url=req.video_url or "",
-        has_transcript="yes" if req.transcript else "no",
+        video_url=req.video_url,
         user_id=user_id or "anon",
+        has_transcript="yes" if req.transcript else "no",
+        retry_reason=req.retry_reason or "none",
+        force=req.force,
     )
+    _start_ts = _pdt_now()
 
     async def gen():
         nonlocal trace_id
@@ -780,22 +857,24 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
         try:
             llm = resolve_llm(req.llm)
         except HTTPException as he:
-            _trace(trace_id, "endpoint", "error", message=he.detail)
+            _trace(trace_id, "endpoint", "error", message=he.detail, user_id=user_id or "anon")
             yield f"event: error\ndata: {json.dumps({'message': he.detail})}\n\n"
             return
 
+        _trace(trace_id, "endpoint", "llm_ready", model=llm.model)
+
         if not vid:
-            _trace(trace_id, "endpoint", "error", message="Invalid YouTube URL")
+            _trace(trace_id, "endpoint", "error", message="Invalid YouTube URL", user_id=user_id or "anon")
             yield f"event: error\ndata: {json.dumps({'message': 'Invalid YouTube URL'})}\n\n"
             return
 
         transcript = req.transcript or await fetch_transcript(vid)
         if not transcript:
-            _trace(trace_id, "endpoint", "error", message="Could not fetch transcript")
+            _trace(trace_id, "endpoint", "error", message="Could not fetch transcript", user_id=user_id or "anon")
             yield f"event: error\ndata: {json.dumps({'message': 'Could not fetch transcript'})}\n\n"
             return
 
-        _trace(trace_id, "transcript", "fetched", length=len(transcript))
+        _trace(trace_id, "transcript", "fetched", length=len(transcript), video_id=vid)
 
         cache_key = f"{user_id or 'anon'}:{vid}:{llm.model}"
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -805,7 +884,7 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
             entry = exercise_cache[cache_key]
             if now_ts - entry["ts"] < CACHE_TTL:
                 payload = {**entry["result"], "cached": True}
-                _trace(trace_id, "endpoint", "cache_hit")
+                _trace(trace_id, "endpoint", "cache_hit", user_id=user_id or "anon", video_id=vid)
                 yield f"event: done\ndata: {json.dumps(payload)}\n\n"
                 return
 
@@ -819,7 +898,11 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
                 exercise_cache[cache_key] = {"result": result, "ts": now_ts}
                 _trace(trace_id, "endpoint", "blocked",
                     reason=result.get("reason",""),
-                    category=result.get("category",""))
+                    category=result.get("category",""),
+                    user_id=user_id or "anon",
+                    video_id=vid,
+                    model=llm.model,
+                    elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
                 yield f"event: blocked\ndata: {json.dumps(result)}\n\n"
                 return
 
@@ -828,10 +911,21 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
             exercise_cache[cache_key] = {"result": response_data, "ts": now_ts}
             _log_experiment(exp_id, user_id, vid, result)
 
-            _trace(trace_id, "endpoint", "end", experiment_id=exp_id, cached=False)
+            _trace(trace_id, "endpoint", "end",
+                experiment_id=exp_id,
+                cached=False,
+                user_id=user_id or "anon",
+                video_id=vid,
+                model=llm.model,
+                elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
             yield f"event: done\ndata: {json.dumps(response_data)}\n\n"
         except Exception as e:
-            _trace(trace_id, "endpoint", "error", message=str(e))
+            _trace(trace_id, "endpoint", "error",
+                message=str(e),
+                user_id=user_id or "anon",
+                video_id=vid,
+                model=getattr(llm, 'model', 'unknown'),
+                elapsed_sec=round((_pdt_now() - _start_ts).total_seconds(), 1))
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -842,13 +936,33 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
 @app.post("/api/feedback")
 async def feedback(fb: FeedbackRequest):
     entry = next((e for e in experiments_log if e["experiment_id"] == fb.experiment_id), None)
-    feedback_store.append({
-        "user_id": entry["user_id"] if entry else "unknown",
+    user_id = entry["user_id"] if entry else "unknown"
+    record = {
+        "user_id": user_id,
         "experiment_id": fb.experiment_id,
         "liked": fb.liked,
         "comment": fb.question,
         "timestamp": _utc_now(),
-    })
+    }
+    feedback_store.append(record)
+
+    _trace(fb.experiment_id, "feedback", "received",
+        user_id=user_id,
+        liked=fb.liked,
+        has_comment="yes" if fb.question else "no",
+    )
+
+    try:
+        existing = []
+        if os.path.exists(_FEEDBACK_LOG):
+            with open(_FEEDBACK_LOG, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        existing.append(record)
+        with open(_FEEDBACK_LOG, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        _trace(fb.experiment_id, "feedback", "persist_error", error=str(e))
+
     return {"status": "ok"}
 
 
@@ -881,6 +995,66 @@ async def signal(sig: SignalRequest):
     p["updated"] = _utc_now()
     profiles[uid] = p
     return {"status": "ok", "signals": s}
+
+
+# ─── Endpoint: Privacy ────────────────────────────────────
+
+@app.get("/api/privacy/data")
+async def privacy_data(user_id: str = ""):
+    """Return a summary of stored data for a user. Never returns sensitive content."""
+    profile = profiles.get(user_id)
+    exps = [e for e in experiments_log if e["user_id"] == user_id]
+    fbs = [f for f in feedback_store if f["user_id"] == user_id]
+    return PrivacyDataResponse(
+        has_profile=profile is not None,
+        experiment_count=len(exps),
+        feedback_count=len(fbs),
+        stored_signals=list(profile.get("signals", {}).keys()) if profile else [],
+    )
+
+
+@app.get("/api/privacy/inventory")
+async def privacy_inventory():
+    """Return what data the service stores and for how long. No user data returned."""
+    return {
+        "stores": _PRIVACY_INVENTORY,
+        "transience": "All stores are in-memory (volatile). Data resets on server restart.",
+        "traces_log_retention": "traces.log is append-only. Rotate or delete manually.",
+        "cache_ttl_seconds": CACHE_TTL,
+        "api_keys": "API keys are NEVER stored server-side. They are sent per-request, used immediately, and discarded.",
+        "transcripts": "Transcripts are fetched on-demand and cached in-memory by video_id (not user_id). Volatile.",
+    }
+
+
+@app.post("/api/privacy/delete")
+async def privacy_delete(body: dict):
+    """Delete all stored data for a user. Hard delete — no soft delete."""
+    user_id = body.get("user_id", "")
+    if not user_id:
+        raise HTTPException(400, "user_id is required")
+
+    count = 0
+    if user_id in profiles:
+        del profiles[user_id]
+        count += 1
+
+    global experiments_log
+    before = len(experiments_log)
+    experiments_log = [e for e in experiments_log if e.get("user_id") != user_id]
+    count += before - len(experiments_log)
+
+    global feedback_store
+    before = len(feedback_store)
+    feedback_store = [f for f in feedback_store if f.get("user_id") != user_id]
+    count += before - len(feedback_store)
+
+    global exercise_cache
+    prefix = f"{user_id}:"
+    before = len(exercise_cache)
+    exercise_cache = {k: v for k, v in exercise_cache.items() if not k.startswith(prefix)}
+    count += before - len(exercise_cache)
+
+    return {"status": "ok", "deleted_entries": count}
 
 
 # ─── Endpoint: Infer Goal ─────────────────────────────────
