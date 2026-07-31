@@ -1,0 +1,14 @@
+[Unit]
+Description=Praxis analytics dashboard (static, localhost:8004)
+After=network.target praxis-analytics-collector.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/YT-Learn/analytics
+ExecStart=/usr/bin/python3 -m http.server 8004 --bind 127.0.0.1 --directory /home/ubuntu/YT-Learn/analytics
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

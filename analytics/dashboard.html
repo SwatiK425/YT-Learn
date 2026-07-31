@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Praxis Analytics</title>
+<script src="chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #131722;
+    --panel2: #1a2030;
+    --border: #232a3a;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --green: #22c55e;
+    --blue: #3b82f6;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --purple: #a78bfa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo {
+    width: 36px; height: 36px;
+    background: conic-gradient(from 180deg, #22c55e, #3b82f6, #ef4444, #22c55e);
+    -webkit-mask: radial-gradient(circle at center, transparent 34%, black 36%);
+    mask: radial-gradient(circle at center, transparent 34%, black 36%);
+    border-radius: 50%;
+  }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.3px; }
+  h1 .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .meta { color: var(--muted); font-size: 12px; display: flex; gap: 16px; align-items: center; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { border-color: var(--blue); }
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .kpi .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .kpi .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+  .kpi .hint { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .kpi .value.green { color: var(--green); }
+  .kpi .value.red { color: var(--red); }
+  .kpi .value.blue { color: var(--blue); }
+  .kpi .value.amber { color: var(--amber); }
+  .kpi .value.purple { color: var(--purple); }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+  .card.wide { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 7px 8px; border-bottom: 1px solid rgba(35,42,58,0.5); }
+  tr:hover td { background: var(--panel2); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .b-green { background: rgba(34,197,94,0.15); color: var(--green); }
+  .b-red { background: rgba(239,68,68,0.15); color: var(--red); }
+  .b-blue { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .b-amber { background: rgba(245,158,11,0.15); color: var(--amber); }
+  .b-muted { background: rgba(139,147,167,0.15); color: var(--muted); }
+  .mono { font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
+  .fb { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid rgba(35,42,58,0.5); align-items: flex-start; }
+  .fb:last-child { border-bottom: none; }
+  .fb .icon { font-size: 16px; margin-top: 2px; }
+  .fb .body { flex: 1; }
+  .fb .comment { color: var(--text); font-size: 13px; }
+  .fb .who { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .reason { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid rgba(35,42,58,0.5); font-size: 13px; }
+  .reason:last-child { border-bottom: none; }
+  .reason .cnt { color: var(--amber); font-weight: 600; }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill { background: var(--panel2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; font-size: 12px; }
+  .pill b { color: var(--blue); }
+  .canvas-wrap { position: relative; height: 260px; }
+  .error-banner { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.4); color: var(--red); padding: 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo"></div>
+    <h1>Praxis <span class="sub">analytics</span></h1>
+  </div>
+  <div class="meta">
+    <span id="genAt">–</span>
+    <button onclick="load()">⟳ Refresh</button>
+  </div>
+</header>
+
+<div id="errorBox" class="error-banner" style="display:none"></div>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Requests per day</h2>
+    <div class="canvas-wrap"><canvas id="reqChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Users over time</h2>
+    <div class="canvas-wrap"><canvas id="userChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Avg latency (s) per day</h2>
+    <div class="canvas-wrap"><canvas id="latChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Usage per user</h2>
+    <div class="canvas-wrap"><canvas id="perUserChart"></canvas></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card wide">
+    <h2>Per-user detail</h2>
+    <div id="userTable"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Feedback</h2>
+    <div id="feedback"><div class="empty">No feedback yet.</div></div>
+  </div>
+  <div class="card">
+    <h2>Blocked reasons</h2>
+    <div id="reasons"><div class="empty">No blocked requests.</div></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Models used</h2>
+    <div id="models" class="pill-row"><div class="empty">No data.</div></div>
+  </div>
+  <div class="card">
+    <h2>Top videos</h2>
+    <div id="videos"><div class="empty">No data.</div></div>
+  </div>
+</div>
+
+<script>
+const C = {
+  green: '#22c55e', blue: '#3b82f6', red: '#ef4444',
+  amber: '#f59e0b', muted: '#8b93a7', purple: '#a78bfa',
+  grid: 'rgba(139,147,167,0.12)',
+};
+Chart.defaults.color = C.muted;
+Chart.defaults.borderColor = C.grid;
+Chart.defaults.font.family = '-apple-system, "Segoe UI", Roboto, sans-serif';
+
+let charts = {};
+
+function destroyCharts() {
+  Object.values(charts).forEach(c => { if (c) c.destroy(); });
+  charts = {};
+}
+
+function shortUser(uid) {
+  if (!uid) return 'anon';
+  if (uid === 'anon') return 'anon';
+  return uid.length > 16 ? uid.slice(0, 12) + '…' : uid;
+}
+
+function fmtTs(ts) {
+  if (!ts) return '–';
+  return String(ts).replace('T', ' ').slice(0, 19);
+}
+
+function kpi(label, value, cls, hint) {
+  return `<div class="kpi"><div class="label">${label}</div><div class="value ${cls || ''}">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+}
+
+function load() {
+  destroyCharts();
+  fetch('stats.json', { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(render)
+    .catch(err => {
+      const box = document.getElementById('errorBox');
+      box.style.display = 'block';
+      box.textContent = 'Failed to load stats.json: ' + err.message +
+        ' — run `python3 collector.py` in analytics/ to generate it.';
+    });
+}
+
+function render(s) {
+  document.getElementById('genAt').textContent = 'generated ' + s.generated_at;
+  const k = s.kpis;
+
+  // ── KPI cards ──
+  const rate = k.success_rate != null ? k.success_rate + '%' : '–';
+  const lat = k.avg_latency_sec != null ? k.avg_latency_sec + 's' : '–';
+  document.getElementById('kpis').innerHTML =
+    kpi('Distinct users', k.distinct_users, 'green', k.distinct_users_7d + ' in 7d · ' + k.distinct_users_30d + ' in 30d') +
+    kpi('Requests', k.total_requests, '') +
+    kpi('Success rate', rate, 'green', k.success + ' ok') +
+    kpi('Blocked', k.blocked, 'amber', 'teachability gate') +
+    kpi('Errors', k.error, 'red') +
+    kpi('Cached', k.cache_hit, 'blue') +
+    kpi('Avg latency', lat, 'purple') +
+    kpi('Feedback', k.feedback_liked + ' 👍 / ' + k.feedback_disliked + ' 👎', '');
+
+  const days = s.daily;
+  const labels = days.map(d => d.date.slice(5));
+  const fillEmpty = a => a.map(v => v == null ? null : v);
+
+  // ── Requests per day (stacked) ──
+  charts.req = new Chart(document.getElementById('reqChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Success', data: days.map(d => d.success), backgroundColor: C.green, stack: 'r' },
+        { label: 'Blocked', data: days.map(d => d.blocked), backgroundColor: C.amber, stack: 'r' },
+        { label: 'Error', data: days.map(d => d.error), backgroundColor: C.red, stack: 'r' },
+        { label: 'Cache', data: days.map(d => d.cache_hit), backgroundColor: C.blue, stack: 'r' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } },
+    },
+  });
+
+  // ── Users per day + cumulative ──
+  charts.users = new Chart(document.getElementById('userChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Active users/day', data: days.map(d => d.users), borderColor: C.green, backgroundColor: 'rgba(34,197,94,0.15)', fill: true, tension: 0.3, pointRadius: 3 },
+        { label: 'Cumulative users', data: days.map(d => d.cumulative_users), borderColor: C.blue, backgroundColor: 'transparent', borderDash: [5, 4], tension: 0.3, pointRadius: 3 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } },
+    },
+  });
+
+  // ── Latency ──
+  charts.lat = new Chart(document.getElementById('latChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ label: 'Avg latency (s)', data: fillEmpty(days.map(d => d.avg_latency)), borderColor: C.purple, backgroundColor: 'rgba(167,139,250,0.15)', fill: true, tension: 0.3, pointRadius: 3 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true } },
+      plugins: { legend: { display: false } },
+    },
+  });
+
+  // ── Per-user usage ──
+  const pu = s.per_user.slice(0, 12).reverse();
+  charts.pu = new Chart(document.getElementById('perUserChart'), {
+    type: 'bar',
+    data: {
+      labels: pu.map(p => shortUser(p.user_id)),
+      datasets: [
+        { label: 'Total', data: pu.map(p => p.requests), backgroundColor: C.muted },
+        { label: 'Success', data: pu.map(p => p.success), backgroundColor: C.green },
+        { label: 'Errors', data: pu.map(p => p.error), backgroundColor: C.red },
+      ],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: { x: { beginAtZero: true, stacked: true }, y: { stacked: true, grid: { display: false } } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } },
+    },
+  });
+
+  // ── Per-user table ──
+  const rows = s.per_user.map(p => {
+    const cls = p.user_id === 'anon' ? 'b-muted' : 'b-blue';
+    return `<tr>
+      <td class="mono"><span class="badge ${cls}">${p.user_id === 'anon' ? 'anon' : shortUser(p.user_id)}</span></td>
+      <td>${p.requests}</td>
+      <td style="color:${C.green}">${p.success}</td>
+      <td style="color:${C.amber}">${p.blocked}</td>
+      <td style="color:${C.red}">${p.error}</td>
+      <td style="color:${C.blue}">${p.cache_hit}</td>
+      <td>${fmtTs(p.last_ts)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('userTable').innerHTML = s.per_user.length ? `
+    <table>
+      <thead><tr><th>User</th><th>Requests</th><th>Success</th><th>Blocked</th><th>Errors</th><th>Cache</th><th>Last active</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : '<div class="empty">No requests yet.</div>';
+
+  // ── Feedback ──
+  const fbs = s.feedback;
+  document.getElementById('feedback').innerHTML = fbs.length ? fbs.map(f => `
+    <div class="fb">
+      <div class="icon">${f.liked === 1 ? '👍' : f.liked === 0 ? '👎' : '·'}</div>
+      <div class="body">
+        ${f.comment ? `<div class="comment">${f.comment.replace(/</g, '&lt;')}</div>` : ''}
+        <div class="who mono">${f.user_id || 'anon'} · ${fmtTs(f.ts)}</div>
+      </div>
+    </div>`).join('') : '<div class="empty">No feedback yet.</div>';
+
+  // ── Blocked reasons ──
+  document.getElementById('reasons').innerHTML = s.blocked_reasons.length ? s.blocked_reasons.map(r => `
+    <div class="reason"><span>${r[0]}</span><span class="cnt">${r[1]}</span></div>`).join('') : '<div class="empty">No blocked requests.</div>';
+
+  // ── Models ──
+  document.getElementById('models').innerHTML = s.models.length ? s.models.map(m =>
+    `<span class="pill mono">${m[0]} <b>×${m[1]}</b></span>`).join('') : '<div class="empty">No data.</div>';
+
+  // ── Top videos ──
+  document.getElementById('videos').innerHTML = s.top_videos.length ? s.top_videos.map(v => `
+    <div class="reason"><span class="mono">${v[0]}</span><span class="cnt">${v[1]}</span></div>`).join('') : '<div class="empty">No data.</div>';
+}
+
+load();
+</script>
+</body>
+</html>
