@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Praxis — Privacy Policy</title>
+<style>
+  :root { --bg:#0b0f14; --card:#111827; --text:#e5e7eb; --muted:#9ca3af; --green:#22C55E; --blue:#3B82F6; --red:#EF4444; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; line-height:1.65; padding:2rem 1rem; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { font-size:1.8rem; margin-bottom:.25rem; }
+  .grad { height:4px; width:64px; border-radius:2px; margin:1rem 0 2rem; background:linear-gradient(90deg,var(--green),var(--blue),var(--red)); }
+  h2 { font-size:1.15rem; margin:2rem 0 .75rem; color:#fff; }
+  p, li { color:var(--muted); margin-bottom:.6rem; font-size:.95rem; }
+  li { margin-left:1.25rem; }
+  .updated { font-size:.85rem; color:var(--muted); margin-bottom:2rem; }
+  a { color:var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Praxis Privacy Policy</h1>
+  <div class="grad"></div>
+  <p class="updated">Effective: August 1, 2026</p>
+
+  <h2>Overview</h2>
+  <p>Praxis (the "extension") turns YouTube videos into hands-on practice exercises. This policy explains what data the extension collects, where it goes, and how it is handled. Praxis is designed privacy-first: you bring your own AI API key (BYOK), and your video transcripts are processed only to generate the exercise you request.</p>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>User ID</strong> — a random identifier (e.g. <code>u_&lt;timestamp&gt;</code>) generated and stored locally in your browser. It lets the backend associate your usage and feedback with you without an account.</li>
+    <li><strong>Video URL and transcript</strong> — sent to the Praxis backend and then to the AI provider <em>you</em> choose, solely to generate a practice exercise from the video's content.</li>
+    <li><strong>Feedback and completion signals</strong> — like/dislike ratings, optional comments, and "mark done" signals you submit in the extension.</li>
+    <li><strong>Usage metadata</strong> — timestamps, model used, response times, and outcome (success/error/blocked). Metadata only; we never log transcripts, prompts, or user content server-side.</li>
+    <li><strong>API key (BYOK)</strong> — when you configure the extension, your key is stored in your browser's local storage and sent per-request to the AI provider you selected. <strong>It is never stored on our servers.</strong></li>
+  </ul>
+
+  <h2>Where data goes</h2>
+  <ul>
+    <li><strong>Praxis backend</strong> (praxis.midnightbuilds.fyi) — processes your request and relays it to the AI provider. Server logs retain metadata (never transcripts or prompts).</li>
+    <li><strong>AI providers you choose</strong> — your API key provider (e.g. Google, OpenAI, Anthropic, OpenRouter, OpenCode Zen) receives the video transcript and your key to generate the exercise, per their own privacy policies.</li>
+    <li><strong>YouTube</strong> — videos and transcripts originate from YouTube; we do not control YouTube's data practices.</li>
+  </ul>
+
+  <h2>How data is used</h2>
+  <ul>
+    <li>To generate practice exercises from videos you request.</li>
+    <li>To show usage statistics on the product dashboard (aggregate and per-user counts for operators).</li>
+    <li>To improve exercise quality based on your feedback ratings.</li>
+  </ul>
+  <p>We do not sell your data. We do not use your data for advertising. We do not share data with third parties except the AI provider required to generate the exercise.</p>
+
+  <h2>Retention</h2>
+  <p>Usage metadata and feedback are retained in server logs for operational and analytics purposes. Transcripts and prompts are not retained server-side. You may request deletion of your usage data by contacting us at the address below with your user ID.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>We may update this policy as the product evolves. Material changes will be reflected here with a new effective date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy or your data: <a href="mailto:YOUR-EMAIL@example.com">YOUR-EMAIL@example.com</a> <em>(replace before publishing)</em></p>
+
+  <p style="margin-top:2.5rem;font-size:.8rem;color:#6b7280;">Praxis — Turn knowledge into skill.</p>
+</div>
+</body>
+</html>

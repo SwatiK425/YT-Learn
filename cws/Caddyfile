@@ -1,0 +1,9 @@
+praxis.midnightbuilds.fyi {
+	handle /privacy* {
+		root * /home/ubuntu/www
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8003
+	}
+}
