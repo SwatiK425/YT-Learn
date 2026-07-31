@@ -1,6 +1,6 @@
 praxis.midnightbuilds.fyi {
 	handle /privacy* {
-		root * /home/ubuntu/www
+		root * /var/www/praxis
 		file_server
 	}
 	handle {
