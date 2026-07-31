@@ -3,7 +3,7 @@
   "name": "Praxis: Turn knowledge into skill",
   "version": "0.1.0",
   "description": "Get a hands-on exercise from any YouTube video — built from what the video actually teaches.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage"],
   "host_permissions": [
     "https://praxis.midnightbuilds.fyi/*",
     "https://www.youtube.com/*",
