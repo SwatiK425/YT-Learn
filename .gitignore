@@ -22,6 +22,9 @@ backend/render.yaml     # was moved to repo root for Render Blueprint
 .DS_Store
 Thumbs.db
 
+# Build artifacts
+praxis-extension.zip
+
 # IDE
 .vscode/
 .idea/
