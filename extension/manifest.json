@@ -5,7 +5,7 @@
   "description": "Get a hands-on exercise from any YouTube video — built from what the video actually teaches.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
-    "http://localhost:8003/*",
+    "https://praxis.midnightbuilds.fyi/*",
     "https://www.youtube.com/*",
     "https://youtube.com/*"
   ],
@@ -15,6 +15,9 @@
   "action": {
     "default_title": "Praxis",
     "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
@@ -33,6 +36,9 @@
     }
   ],
   "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }
 }

@@ -1,7 +1,7 @@
 // ─── Praxis Content Script ─────────────────────────
 // Inject button, handle overlay, fetch transcript, call backend.
 
-const BACKEND = 'http://localhost:8003';  // ← change to your Render URL after deploy
+const BACKEND = 'https://praxis.midnightbuilds.fyi';
 
 // Set by retry pills; consumed by the next performGenerate. Travels in the
 // /api/suggest request body so the regeneration is guaranteed to see it
@@ -93,10 +93,30 @@ function saveCachedBlocked(videoUrl, userId, data) {
 
 // ─── Inject button into YouTube toolbar ───────────────
 
+function isVisible(el) {
+  var r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return false;
+  // offsetParent is null for fixed-position elements, so check rects primarily
+  return true;
+}
+
 function findToolbar() {
-  // Look for #top-level-buttons-computed in the main DOM.
-  var el = document.querySelector('#top-level-buttons-computed');
-  if (el) return el;
+  // Prefer the watch-page toolbar inside the metadata section. YouTube keeps
+  // several hidden #top-level-buttons-computed containers in the DOM (menus in
+  // related videos, engagement panels, etc.); blindly taking the first one
+  // appends the Praxis button to an invisible/nested menu.
+  var scoped = document.querySelector(
+    '#above-the-fold #top-level-buttons-computed, ' +
+    'ytd-watch-metadata #top-level-buttons-computed, ' +
+    'ytd-video-primary-info-renderer #top-level-buttons-computed'
+  );
+  if (scoped) return scoped;
+
+  // Fallback: first *visible* container in the main DOM
+  var els = document.querySelectorAll('#top-level-buttons-computed');
+  for (var i = 0; i < els.length; i++) {
+    if (isVisible(els[i])) return els[i];
+  }
 
   // Also check inside any open shadow root that might be the
   // ytd-menu-renderer or its parent.  We iterate ALL elements
@@ -104,8 +124,9 @@ function findToolbar() {
   var all = document.querySelectorAll('*');
   for (var i = 0, len = all.length; i < len; i++) {
     var sr = all[i].shadowRoot;
-    if (sr && sr.querySelector('#top-level-buttons-computed')) {
-      return sr.querySelector('#top-level-buttons-computed');
+    if (sr) {
+      var inner = sr.querySelector('#top-level-buttons-computed');
+      if (inner && isVisible(inner)) return inner;
     }
   }
   return null;
@@ -121,7 +142,7 @@ function tryInject() {
   const btn = document.createElement('button');
   btn.id = 'praxis-btn';
   btn.className = 'yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--mono yt-spec-button-shape-next--size-m';
-  btn.innerHTML = '<div class="praxis-btn-inner"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex-shrink:0;vertical-align:middle"><rect x="2" y="3" width="16" height="4" rx="1.5" fill="#22c55e"/><rect x="2" y="8" width="16" height="4" rx="1.5" fill="#ef4444"/><rect x="2" y="13" width="16" height="4" rx="1.5" fill="#3b82f6"/></svg> Praxis</div>';
+  btn.innerHTML = '<div class="praxis-btn-inner"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex-shrink:0;vertical-align:middle"><defs><linearGradient id="praxisGrad" x1="1.8" y1="10" x2="18.2" y2="10" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ef4444"/><stop offset="0.5" stop-color="#3b82f6"/><stop offset="1" stop-color="#22c55e"/></linearGradient></defs><path d="M 18.2,10.0 18.2,10.3 18.0,10.7 17.8,11.0 17.5,11.2 17.1,11.4 16.7,11.6 16.3,11.8 15.8,11.9 15.4,11.9 14.9,11.9 14.5,11.9 14.1,11.8 13.7,11.8 13.3,11.7 12.9,11.6 12.6,11.4 12.2,11.3 11.9,11.1 11.6,11.0 11.3,10.8 11.1,10.7 10.8,10.5 10.5,10.3 10.3,10.2 10.0,10.0 9.7,9.8 9.5,9.7 9.2,9.5 8.9,9.3 8.7,9.2 8.4,9.0 8.1,8.9 7.8,8.7 7.4,8.6 7.1,8.4 6.7,8.3 6.3,8.2 5.9,8.2 5.5,8.1 5.1,8.1 4.6,8.1 4.2,8.1 3.7,8.2 3.3,8.4 2.9,8.6 2.5,8.8 2.2,9.0 2.0,9.3 1.8,9.7 1.8,10.0 1.8,10.3 2.0,10.7 2.2,11.0 2.5,11.2 2.9,11.4 3.3,11.6 3.7,11.8 4.2,11.9 4.6,11.9 5.1,11.9 5.5,11.9 5.9,11.8 6.3,11.8 6.7,11.7 7.1,11.6 7.4,11.4 7.8,11.3 8.1,11.1 8.4,11.0 8.7,10.8 8.9,10.7 9.2,10.5 9.5,10.3 9.7,10.2 10.0,10.0 10.3,9.8 10.5,9.7 10.8,9.5 11.1,9.3 11.3,9.2 11.6,9.0 11.9,8.9 12.2,8.7 12.6,8.6 12.9,8.4 13.3,8.3 13.7,8.2 14.1,8.2 14.5,8.1 14.9,8.1 15.4,8.1 15.8,8.1 16.3,8.2 16.7,8.4 17.1,8.6 17.5,8.8 17.8,9.0 18.0,9.3 18.2,9.7 18.2,10.0 Z" fill="none" stroke="url(#praxisGrad)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg> Praxis</div>';
   btn.addEventListener('click', openOverlay);
   target.appendChild(btn);
 }
