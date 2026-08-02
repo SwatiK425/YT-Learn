@@ -184,6 +184,7 @@ class Profile(BaseModel):
 class SuggestRequest(BaseModel):
     video_url: str
     transcript: str | None = None
+    transcript_error: str | None = None  # client-side fetch failure reason (diagnostics)
     goal_override: str | None = None
     # Passed directly in the request instead of via a racing side-channel
     # signal POST — the regeneration is guaranteed to see it.
@@ -819,6 +820,7 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
         video_url=req.video_url,
         user_id=user_id or "anon",
         has_transcript="yes" if req.transcript else "no",
+        transcript_error=req.transcript_error or "",
         retry_reason=req.retry_reason or "none",
         force=req.force,
         model=llm.model)
@@ -834,7 +836,9 @@ async def suggest(req: SuggestRequest, user_id: str | None = None):
 
     transcript = req.transcript or await fetch_transcript(vid)
     if not transcript:
-        _trace(trace_id, "endpoint", "error", message="Could not fetch transcript", user_id=user_id or "anon")
+        _trace(trace_id, "endpoint", "error", message="Could not fetch transcript",
+               transcript_error=req.transcript_error or "server_fetch_failed",
+               user_id=user_id or "anon")
         raise HTTPException(400, "Could not fetch transcript.")
     _trace(trace_id, "transcript", "fetched", length=len(transcript), video_id=vid)
 
@@ -898,6 +902,7 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
         video_url=req.video_url,
         user_id=user_id or "anon",
         has_transcript="yes" if req.transcript else "no",
+        transcript_error=req.transcript_error or "",
         retry_reason=req.retry_reason or "none",
         force=req.force,
     )
@@ -924,7 +929,9 @@ async def suggest_stream(req: SuggestRequest, user_id: str | None = None):
 
         transcript = req.transcript or await fetch_transcript(vid)
         if not transcript:
-            _trace(trace_id, "endpoint", "error", message="Could not fetch transcript", user_id=user_id or "anon")
+            _trace(trace_id, "endpoint", "error", message="Could not fetch transcript",
+                   transcript_error=req.transcript_error or "server_fetch_failed",
+                   user_id=user_id or "anon")
             yield f"event: error\ndata: {json.dumps({'message': 'Could not fetch transcript'})}\n\n"
             return
 

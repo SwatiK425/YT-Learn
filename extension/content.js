@@ -773,6 +773,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
     const llmCfg = await getLLMConfig();
     const body = { video_url: videoUrl };
     if (transcript) body.transcript = transcript;
+    else if (lastTranscriptError) body.transcript_error = lastTranscriptError;
     if (llmCfg) body.llm = llmCfg;
     if (currentExpId || pendingRetryReason) body.force = true; // Try Again must bypass cache
     if (pendingRetryReason) { body.retry_reason = pendingRetryReason; pendingRetryReason = null; }
@@ -966,6 +967,10 @@ function hideStatus() {
 
 const TC_PREFIX = 'yl_tr_';
 
+// Last transcript failure reason ('' if none / success). Set by getTranscript,
+// sent to the backend as transcript_error so failures are diagnosable.
+var lastTranscriptError = '';
+
 function extractVideoId(url) {
   var m = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?&]+)/);
   return m ? m[1] : null;
@@ -977,21 +982,24 @@ function cacheTranscript(videoId, text) {
 
 async function getTranscript(videoUrl, opts) {
   opts = opts || {};
+  lastTranscriptError = '';
   var videoId = extractVideoId(videoUrl);
-  if (!videoId) return null;
+  if (!videoId) { lastTranscriptError = 'no_video_id'; return null; }
   var allowClick = opts.allowClick !== false;
   var cached = await new Promise(function(r) {
     chrome.storage.local.get(TC_PREFIX + videoId, function(d) { r(d[TC_PREFIX + videoId] ? d[TC_PREFIX + videoId].text : null); });
   });
   if (cached) { console.log('[Praxis] transcript from cache'); return cached; }
   console.log('[Praxis] trying injectAndFetch for ' + videoId);
-  var text = await injectAndFetch(videoId, 12);
-  if (text) { console.log('[Praxis] injectAndFetch got', text.length, 'chars'); cacheTranscript(videoId, text); return text; }
-  console.log('[Praxis] injectAndFetch returned null');
+  var result = await injectAndFetch(videoId, 12);
+  if (result && result.text) { console.log('[Praxis] injectAndFetch got', result.text.length, 'chars'); cacheTranscript(videoId, result.text); return result.text; }
+  console.log('[Praxis] injectAndFetch returned null (reason: ' + (result && result.reason || 'unknown') + ')');
+  lastTranscriptError = (result && result.reason) || 'unknown';
   if (allowClick) {
     console.log('[Praxis] trying click fallback');
-    text = await extractTranscriptByClick();
+    var text = await extractTranscriptByClick();
     if (text) cacheTranscript(videoId, text);
+    else lastTranscriptError = 'click_failed';
     return text;
   }
   return null;
@@ -1008,7 +1016,7 @@ function injectAndFetch(videoId, timeoutSec) {
   var safeId = String(videoId).replace(/[^a-zA-Z0-9_-]/g, '');
   return new Promise(function(resolve) {
     var handler = function(e) {
-      if (e.detail && e.detail.id === safeId) { document.removeEventListener('_yl_tr', handler); resolve(e.detail.text || null); }
+      if (e.detail && e.detail.id === safeId) { document.removeEventListener('_yl_tr', handler); resolve({ text: e.detail.text || null, reason: e.detail.reason || '' }); }
     };
     document.addEventListener('_yl_tr', handler, { once: true });
     var script = document.createElement('script');
@@ -1016,7 +1024,7 @@ function injectAndFetch(videoId, timeoutSec) {
     script.setAttribute('data-video-id', safeId);
     document.body.appendChild(script);
     setTimeout(function() { try { script.remove(); } catch(e) {} }, 100);
-    setTimeout(function() { document.removeEventListener('_yl_tr', handler); resolve(null); }, timeoutSec * 1000);
+    setTimeout(function() { document.removeEventListener('_yl_tr', handler); resolve({ text: null, reason: 'timeout' }); }, timeoutSec * 1000);
   });
 }
 
