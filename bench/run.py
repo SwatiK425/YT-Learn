@@ -33,7 +33,7 @@ import time
 import uuid
 import urllib.request
 import urllib.error
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -47,12 +47,11 @@ MANIFEST = BENCH_DIR / "manifest.json"
 BASELINE_PORT = 8003
 CANDIDATE_PORT = 8004
 
-# Match the backend's trace format
-TRACE_ENTRY = re.compile(
-    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) PDT\]"
-    r"\[([a-f0-9]+)\]\[([a-z_]+)\]\[([a-z_]+)\](.*)", re.DOTALL
+# Match the backend's trace format: entries start with a header line, fields follow indented
+TRACE_HEADER = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) PDT\]\[([a-f0-9]+)\]\[([a-z_]+)\]\[([a-z_]+)\]\n"
 )
-FIELD = re.compile(r"^  ([a-z_]+): (.*)$")
+FIELD = re.compile(r"^  ([a-z_]+): (.*)$", re.MULTILINE)
 
 FORBIDDEN = ("reflect", "think about ", "imagine ", "consider ", "understand ")
 
@@ -173,16 +172,20 @@ def quality_checks(body: str) -> dict:
     return checks
 
 
-def parse_traces(trace_path: Path, start_iso: str, end_iso: str) -> dict:
-    """Stage breakdown from a server's traces.log within [start, end] wall-clock window."""
+def parse_traces(trace_path: Path, start_pos: int) -> dict:
+    """Stage breakdown from a server's traces.log, parsed from byte offset
+    start_pos to EOF (timezone-proof: no wall-clock window comparison)."""
     if not trace_path.exists():
         return {}
     stats = {"stage1": [], "stage2": [], "retries": 0, "rejects": 0, "pipeline": []}
-    text = trace_path.read_text(encoding="utf-8", errors="replace")
-    for m in TRACE_ENTRY.finditer(text):
-        ts, tid, comp, phase, body = m.groups()
-        if not (start_iso <= ts[:19] <= end_iso[:19]):
-            continue
+    with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
+        f.seek(start_pos)
+        text = f.read()
+    headers = list(TRACE_HEADER.finditer(text))
+    for i, m in enumerate(headers):
+        ts, tid, comp, phase = m.groups()
+        body_end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        body = text[m.end():body_end]
         fields = {}
         for fm in FIELD.finditer(body):
             fields[fm.group(1)] = fm.group(2)
@@ -259,7 +262,11 @@ def main() -> None:
             sys.exit(1)
         print(f"  ✓ {label} healthy on :{port}")
 
-    start_iso = datetime.now(timezone.utc).astimezone(timezone.utc) + timedelta(hours=-7)
+    start_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    trace_offsets = {}
+    for label in procs:
+        trace_path = (BASELINE_DIR if label == "baseline" else REPO_DIR) / "backend" / "traces.log"
+        trace_offsets[label] = trace_path.stat().st_size if trace_path.exists() else 0
 
     # Run all fixtures against the chosen sides
     side_results = {side: [] for side in procs}
@@ -281,12 +288,12 @@ def main() -> None:
                       f"steps={q['steps']} forbidden={q['forbidden'] or '-'}")
                 time.sleep(0.4)  # be gentle with free-tier rate limits
 
-    end_iso = datetime.now(timezone.utc).astimezone(timezone.utc) + timedelta(hours=-7)
+    end_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Stage breakdown from each server's own traces.log
+    # Stage breakdown from each server's own traces.log (offset -> EOF, no wall-clock)
     for label in procs:
         trace_path = (BASELINE_DIR if label == "baseline" else REPO_DIR) / "backend" / "traces.log"
-        stats = parse_traces(trace_path, start_iso.strftime("%Y-%m-%d %H:%M:%S"), end_iso.strftime("%Y-%m-%d %H:%M:%S"))
+        stats = parse_traces(trace_path, trace_offsets[label])
         summary = summarize(label, side_results[label], stats, run_id)
         print(f"\n{summary}\n")
         (RESULTS_DIR / run_id / f"summary-{label}.md").write_text(summary, encoding="utf-8")
