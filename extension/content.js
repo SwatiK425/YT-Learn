@@ -821,6 +821,7 @@ async function performGenerate(videoUrl, userId, currentExpId) {
 
       if (streamErr === 'blocked') return;
       if (streamErr || !donePayload) {
+        if (streamErr && streamErr.indexOf('transcript') !== -1) streamErr = transcriptErrorMessage();
         showStatus(streamErr || 'Generation failed. Try again.', true);
         setLoading(false);
         return;
@@ -855,7 +856,11 @@ async function performGenerate(videoUrl, userId, currentExpId) {
       body: JSON.stringify(body),
     });
     var data = await resp.json();
-    if (!resp.ok) { showStatus(data.detail || 'Generation failed.', true); setLoading(false); return; }
+    if (!resp.ok) {
+      var detail = data.detail || 'Generation failed.';
+      if (String(detail).indexOf('transcript') !== -1) detail = transcriptErrorMessage();
+      showStatus(detail, true); setLoading(false); return;
+    }
     if (data.status === 'blocked') {
       renderBlockedView(data, videoUrl, userId);
       return;
@@ -958,6 +963,22 @@ function showStatus(msg, isError) {
   el.className = 'yl-status' + (isError ? ' yl-status-err' : ' yl-status-ok');
 }
 
+// Map the recorded fetch failure reason to plain-language guidance.
+// Called when the server reports it could not fetch a transcript.
+function transcriptErrorMessage() {
+  var r = lastTranscriptError || 'server_fetch_failed';
+  switch (r) {
+    case 'no_captions': return 'This video has no captions, so Praxis can\u2019t read it. Try a video with captions enabled.';
+    case 'fetch_blocked': return 'YouTube blocked the caption fetch. Click Try Again to retry.';
+    case 'parse_failed': return 'Captions were found but couldn\u2019t be read. Click Try Again.';
+    case 'third_party_failed': return 'No caption source worked. Check your connection and click Try Again.';
+    case 'timeout': return 'Fetching captions timed out. Click Try Again.';
+    case 'click_failed': return 'Couldn\u2019t open the transcript panel. Turn on captions on the video, then click Try Again.';
+    case 'no_video_id': return 'Couldn\u2019t read the video URL. Refresh the page and try again.';
+    default: return 'Could not fetch the transcript. Click Try Again to retry.';
+  }
+}
+
 function hideStatus() {
   const el = document.getElementById('yl-status');
   if (el) el.classList.add('hidden');
@@ -991,7 +1012,7 @@ async function getTranscript(videoUrl, opts) {
   });
   if (cached) { console.log('[Praxis] transcript from cache'); return cached; }
   console.log('[Praxis] trying injectAndFetch for ' + videoId);
-  var result = await injectAndFetch(videoId, 12);
+  var result = await injectAndFetch(videoId, 18);
   if (result && result.text) { console.log('[Praxis] injectAndFetch got', result.text.length, 'chars'); cacheTranscript(videoId, result.text); return result.text; }
   console.log('[Praxis] injectAndFetch returned null (reason: ' + (result && result.reason || 'unknown') + ')');
   lastTranscriptError = (result && result.reason) || 'unknown';

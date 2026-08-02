@@ -13,7 +13,8 @@
   }
   if (!id) return;
 
-  var maxTry = 20, tries = 0;
+  var maxTry = 12, tries = 0;   // 12 x 500ms = 6s window on player response
+  var innertubeTried = false;   // innertube player API used as 2nd source
   // Reason codes so the extension can tell the user WHAT failed:
   // 'no_captions' | 'fetch_blocked' | 'parse_failed' | 'third_party_failed'
   var failReason = 'no_captions';
@@ -24,7 +25,7 @@
       var c = p && p.captions && p.captions.playerCaptionsTracklistRenderer;
       var tracks = c && c.captionTracks;
       if (tracks && tracks.length) {
-        var tr = tracks.find(function(x) { return x.languageCode && x.languageCode.indexOf('en') === 0; }) || tracks[0];
+        var tr = pickBestTrack(tracks);
         if (tr && tr.baseUrl) { fetchBaseUrl(tr.baseUrl); return; }
       }
     } catch(e) {}
@@ -33,7 +34,50 @@
       if (videoEl && videoEl.textTracks && videoEl.textTracks.length > 0) { if (extractFromTextTracks(videoEl) === true) return; }
     } catch(e) {}
     if (++tries < maxTry) setTimeout(poll, 500);
+    else if (!innertubeTried) { innertubeTried = true; tryInnertube(); }
     else tryThirdParty();
+  }
+
+  // Prefer manual English, then auto-generated English, then any track.
+  function pickBestTrack(tracks) {
+    var manual = null, asr = null, any = null;
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i];
+      if (!t || !t.baseUrl) continue;
+      if (!any) any = t;
+      var lc = (t.languageCode || '').toLowerCase();
+      if (lc.indexOf('en') !== 0) continue;
+      if (t.kind === 'asr') { if (!asr) asr = t; }
+      else { if (!manual) manual = t; }
+    }
+    return manual || asr || any;
+  }
+
+  // 2nd source: the innertube player API — same-origin POST, returns
+  // caption tracks with freshly signed baseUrls (more reliable than the
+  // page-scraped ytInitialPlayerResponse).
+  function tryInnertube() {
+    failReason = 'fetch_blocked';
+    var body = JSON.stringify({
+      videoId: id,
+      context: { client: { clientName: 'WEB', clientVersion: '2.20240101.00.00' } }
+    });
+    fetch('https://www.youtube.com/youtubei/v1/player', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      try {
+        var c = d && d.captions && d.captions.playerCaptionsTracklistRenderer;
+        var tracks = c && c.captionTracks;
+        if (tracks && tracks.length) {
+          var tr = pickBestTrack(tracks);
+          if (tr && tr.baseUrl) { fetchBaseUrl(tr.baseUrl); return; }
+        }
+      } catch(e) {}
+      failReason = 'no_captions';
+      tryThirdParty();
+    }).catch(function() { tryThirdParty(); });
   }
 
   function fetchBaseUrl(url) {
@@ -49,7 +93,20 @@
             .then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); })
             .catch(function() { dispatch(null, 'fetch_blocked'); });
         }
-      }).catch(function() { dispatch(null, 'fetch_blocked'); });
+      }).catch(function() {
+        // Transient failures happen — retry once after 800ms, then fall
+        // back to the innertube source for a freshly signed URL.
+        setTimeout(function() {
+          fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
+            .then(function(text) {
+              var result = parseTranscriptResponse(text);
+              if (result) dispatch(result); else dispatch(null, 'parse_failed');
+            }).catch(function() {
+              if (!innertubeTried) { innertubeTried = true; tryInnertube(); }
+              else dispatch(null, 'fetch_blocked');
+            });
+        }, 800);
+      });
   }
 
   function parseTranscriptResponse(text) {
