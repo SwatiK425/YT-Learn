@@ -409,7 +409,8 @@ Return ONLY valid JSON — no extra text:
     {"insight": "insight text", "evidence": "supporting evidence from transcript"}
   ] or empty [] if score < 40,
   "pareto_insight": "... or empty if score < 40",
-  "pareto_why": "... or empty if score < 40"
+  "pareto_why": "... or empty if score < 40",
+  "pareto_mechanism": "The EXACT steps, method, code pattern, tool, or framework the creator teaches to execute this insight. Quote the specifics from the transcript — parameter names, commands, tools, order of operations, numbers. Empty string if the video teaches no concrete mechanism."
 }"""
 
 EXERCISE_SYSTEM = """You are an expert teacher and skill-transfer designer.
@@ -431,6 +432,7 @@ Main problem the video solves: {main_problem}
 Creator's thesis: {creator_thesis}
 Most important insight: {insight}
 Why this insight matters: {evidence}
+Exact mechanism/method taught in the video: {mechanism}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 1 — UNDERSTAND THE MECHANISM
@@ -439,6 +441,11 @@ STEP 1 — UNDERSTAND THE MECHANISM
 Study the analysis above.
 
 Ask: What specific mechanism, process, mental model, or behavior makes this insight useful in practice?
+
+The "Exact mechanism/method taught in the video" line is the MOST IMPORTANT input.
+Your exercise MUST be built on that mechanism — reuse its exact steps, tools,
+parameters, or framework. Do not replace it with generic advice. If the mechanism
+field is empty, derive the mechanism from the insight and evidence above.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 2 — CONVERT KNOWLEDGE INTO A SKILL
@@ -678,6 +685,7 @@ async def generate_experiment(
     # Stage 2: Exercise from pareto insight + full video context
     pareto = analysis.get("pareto_insight", analysis["insights"][0]["insight"])
     evidence = analysis.get("pareto_why", "")
+    mechanism = analysis.get("pareto_mechanism", "") or analysis.get("pareto_why", "")
     main_problem = analysis.get("main_problem", "")
     creator_thesis = analysis.get("creator_thesis", "")
 
@@ -692,8 +700,10 @@ async def generate_experiment(
         main_problem=main_problem,
         creator_thesis=creator_thesis,
         evidence=evidence,
+        mechanism=mechanism,
     )
-    user = f"Selected insight: {pareto}\nWhy it matters: {evidence}\n\n{difficulty_note}" if difficulty_note else f"Selected insight: {pareto}\nWhy it matters: {evidence}"
+    user = (f"Selected insight: {pareto}\nWhy it matters: {evidence}\nMechanism taught: {mechanism}"
+            + (f"\n\n{difficulty_note}" if difficulty_note else ""))
 
     last_err = None
     for attempt in range(2):
