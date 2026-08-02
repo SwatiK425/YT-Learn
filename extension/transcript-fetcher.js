@@ -14,6 +14,9 @@
   if (!id) return;
 
   var maxTry = 20, tries = 0;
+  // Reason codes so the extension can tell the user WHAT failed:
+  // 'no_captions' | 'fetch_blocked' | 'parse_failed' | 'third_party_failed'
+  var failReason = 'no_captions';
 
   function poll() {
     try {
@@ -34,16 +37,19 @@
   }
 
   function fetchBaseUrl(url) {
+    failReason = 'fetch_blocked';
     fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
       .then(function(text) {
         var result = parseTranscriptResponse(text);
         if (result) dispatch(result);
         else {
+          failReason = 'parse_failed';
           var sep = url.indexOf('?') >= 0 ? '&' : '?';
           fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
-            .then(function(t2) { dispatch(parseTranscriptResponse(t2) || null); }).catch(function() { dispatch(null); });
+            .then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); })
+            .catch(function() { dispatch(null, 'fetch_blocked'); });
         }
-      }).catch(function() { dispatch(null); });
+      }).catch(function() { dispatch(null, 'fetch_blocked'); });
   }
 
   function parseTranscriptResponse(text) {
@@ -64,14 +70,17 @@
   }
 
   function tryThirdParty() {
+    failReason = 'third_party_failed';
     var url = 'https://youtubetranscript.com/?v=' + id + '&format=json';
     fetch(url).then(function(r) { return r.json(); }).then(function(d) {
       if (d && d.length) { var p = []; for (var i = 0; i < d.length; i++) { if (d[i].text) p.push(d[i].text); } if (p.length) { dispatch(p.join(' ').replace(/\s+/g, ' ').trim()); return; } }
-      fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { dispatch(parseTranscriptResponse(t2) || null); }).catch(function() { dispatch(null); });
-    }).catch(function() { dispatch(null); });
+      fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, failReason); }).catch(function() { dispatch(null, failReason); });
+    }).catch(function() { dispatch(null, failReason); });
   }
 
-  function dispatch(text) { document.dispatchEvent(new CustomEvent('_yl_tr', { detail: { id: id, text: text } })); }
+  function dispatch(text, reason) {
+    document.dispatchEvent(new CustomEvent('_yl_tr', { detail: { id: id, text: text, reason: text ? '' : (reason || failReason) } }));
+  }
 
   poll();
 })();
