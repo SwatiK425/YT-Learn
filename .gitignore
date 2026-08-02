@@ -30,6 +30,13 @@ analytics/analytics.db
 analytics/stats.json
 analytics/.trace_offset
 
+# Bench harness runtime artifacts (regenerated per run)
+bench/.env
+bench/fixtures/
+bench/manifest.json
+bench/results/
+bench/server-*.log
+
 # IDE
 .vscode/
 .idea/
