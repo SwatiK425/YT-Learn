@@ -1020,7 +1020,11 @@ async function getTranscript(videoUrl, opts) {
     console.log('[Praxis] trying click fallback');
     var text = await extractTranscriptByClick();
     if (text) cacheTranscript(videoId, text);
-    else lastTranscriptError = 'click_failed';
+    else if (lastTranscriptError === 'unknown' || lastTranscriptError === '' || lastTranscriptError === 'timeout')
+      lastTranscriptError = 'click_failed';
+    // otherwise keep the more specific inject reason (parse_failed,
+    // fetch_blocked, no_captions, third_party_failed) — click failure is
+    // secondary to knowing WHY the injected fetch could not get captions.
     return text;
   }
   return null;
