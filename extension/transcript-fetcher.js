@@ -16,7 +16,7 @@
   var maxTry = 12, tries = 0;   // 12 x 500ms = 6s window on player response
   var innertubeTried = false;   // innertube player API used as 2nd source
   // Reason codes so the extension can tell the user WHAT failed:
-  // 'no_captions' | 'fetch_blocked' | 'parse_failed' | 'third_party_failed'
+  // 'no_captions' | 'fetch_blocked' | 'empty_response' | 'parse_failed' | 'third_party_failed'
   var failReason = 'no_captions';
 
   function poll() {
@@ -84,13 +84,25 @@
     failReason = 'fetch_blocked';
     fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
       .then(function(text) {
+        // Empty body = YouTube served NOTHING (the bot-check signature:
+        // HTTP 200 with 0 bytes). That is a block, not a parse error.
+        // One retry guards against a transient empty race; still empty = blocked.
+        if (!text) {
+          setTimeout(function() {
+            fetch(url).then(function(r) { return r.text(); }).then(function(t2) {
+              if (!t2) dispatch(null, 'empty_response');
+              else { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); }
+            }).catch(function() { dispatch(null, 'fetch_blocked'); });
+          }, 800);
+          return;
+        }
         var result = parseTranscriptResponse(text);
         if (result) dispatch(result);
         else {
           failReason = 'parse_failed';
           var sep = url.indexOf('?') >= 0 ? '&' : '?';
           fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
-            .then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); })
+            .then(function(t2) { if (!t2) dispatch(null, 'empty_response'); else { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); } })
             .catch(function() { dispatch(null, 'fetch_blocked'); });
         }
       }).catch(function() {
