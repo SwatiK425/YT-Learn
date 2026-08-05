@@ -46,11 +46,17 @@
   function poll() {
     try {
       var p = window.ytInitialPlayerResponse;
-      var c = p && p.captions && p.captions.playerCaptionsTracklistRenderer;
-      var tracks = c && c.captionTracks;
-      if (tracks && tracks.length) {
-        var tr = pickBestTrack(tracks);
-        if (tr && tr.baseUrl) { fetchBaseUrl(tr.baseUrl); return; }
+      // GUARD: ytInitialPlayerResponse is written once at page load and goes
+      // STALE after YouTube's in-page (SPA) navigation — reading it then
+      // yields the PREVIOUS video's caption tracks for the wrong video.
+      // Only trust it when it belongs to the video we were asked for.
+      if (p && p.videoDetails && p.videoDetails.videoId === id) {
+        var c = p.captions && p.captions.playerCaptionsTracklistRenderer;
+        var tracks = c && c.captionTracks;
+        if (tracks && tracks.length) {
+          var tr = pickBestTrack(tracks);
+          if (tr && tr.baseUrl) { fetchBaseUrl(tr.baseUrl); return; }
+        }
       }
     } catch(e) {}
     try {
