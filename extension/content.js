@@ -972,7 +972,7 @@ function transcriptErrorMessage() {
     case 'fetch_blocked': return 'YouTube blocked the caption fetch. Click Try Again to retry.';
     case 'empty_response': return 'YouTube returned an empty caption response (usually a sign-in/anti-bot block). Try Again — or open the video in a signed-in Chrome tab.';
     case 'parse_failed': return 'Captions were found but couldn\u2019t be read. Click Try Again.';
-    case 'third_party_failed': return 'No caption source worked. Check your connection and click Try Again.';
+    case 'timedtext_failed': return 'No caption source worked. Check your connection and click Try Again.';
     case 'timeout': return 'Fetching captions timed out. Click Try Again.';
     case 'click_failed': return 'Couldn\u2019t open the transcript panel. Turn on captions on the video, then click Try Again.';
     case 'no_video_id': return 'Couldn\u2019t read the video URL. Refresh the page and try again.';
@@ -988,6 +988,12 @@ function hideStatus() {
 // ─── Transcript: injected fetch first, click fallback last ─
 
 const TC_PREFIX = 'yl_tr_';
+
+// In-flight transcript fetch dedup map (FRE review #5). Keyed by videoId;
+// holds the pending injectAndFetch promise so a fast Generate click reuses
+// the prefetch's in-flight fetch instead of injecting a second fetcher
+// against the same session. Cleared when the fetch settles.
+const _pendingFetches = {};
 
 // Last transcript failure reason ('' if none / success). Set by getTranscript,
 // sent to the backend as transcript_error so failures are diagnosable.
@@ -1013,7 +1019,23 @@ async function getTranscript(videoUrl, opts) {
   });
   if (cached) { console.log('[Praxis] transcript from cache'); return cached; }
   console.log('[Praxis] trying injectAndFetch for ' + videoId);
-  var result = await injectAndFetch(videoId, 18);
+  // ── In-flight dedup (FRE review #5) ──────────────────────────────
+  // Prefetch and a fast Generate click can both reach here before the
+  // cache is written. If a fetch for this videoId is already running,
+  // await that SAME promise instead of injecting a second fetcher against
+  // the same session — two concurrent injections raise bot-check
+  // probability and the loser's work is pure waste.
+  var inflight = _pendingFetches[videoId];
+  if (!inflight) {
+    inflight = injectAndFetch(videoId, 18).then(function(result) {
+      delete _pendingFetches[videoId];   // completed — future calls fetch fresh
+      return result;
+    });
+    _pendingFetches[videoId] = inflight;
+  } else {
+    console.log('[Praxis] reusing in-flight fetch for ' + videoId);
+  }
+  var result = await inflight;
   if (result && result.text) { console.log('[Praxis] injectAndFetch got', result.text.length, 'chars'); cacheTranscript(videoId, result.text); return result.text; }
   console.log('[Praxis] injectAndFetch returned null (reason: ' + (result && result.reason || 'unknown') + ')');
   lastTranscriptError = (result && result.reason) || 'unknown';
@@ -1024,7 +1046,7 @@ async function getTranscript(videoUrl, opts) {
     else if (lastTranscriptError === 'unknown' || lastTranscriptError === '' || lastTranscriptError === 'timeout')
       lastTranscriptError = 'click_failed';
     // otherwise keep the more specific inject reason (parse_failed,
-    // fetch_blocked, no_captions, third_party_failed) — click failure is
+    // fetch_blocked, no_captions, timedtext_failed) — click failure is
     // secondary to knowing WHY the injected fetch could not get captions.
     return text;
   }
