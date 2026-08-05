@@ -1,8 +1,17 @@
 // ─── Praxis: injected transcript fetcher ─────────────────
 // Loaded via <script src="chrome-extension://..."> so YouTube's
 // CSP allows execution (inline script injection is blocked).
+// Runs inside YouTube's PAGE context => MUST stay ES5-conservative
+// (no arrows, no template literals, no let/const, use var + function).
 // Reads videoId from its own script tag data-video-id attribute.
 // Communicates results via CustomEvent('_yl_tr') on document.
+//
+// Source chain (harden for reliability):
+//   1. ytInitialPlayerResponse  (polled ~6s)
+//   2. <video> textTracks        (no network, cues only)
+//   3. innertube player API      (freshly signed URLs + live key/visitorData)
+//   4. signed timedtext baseUrl  (same-origin, as-is then fmt=json3)
+//   youtubetranscript.com is REMOVED — it is dead (Merlin AI landing page).
 
 (function() {
   var id = null;
@@ -16,8 +25,23 @@
   var maxTry = 12, tries = 0;   // 12 x 500ms = 6s window on player response
   var innertubeTried = false;   // innertube player API used as 2nd source
   // Reason codes so the extension can tell the user WHAT failed:
-  // 'no_captions' | 'fetch_blocked' | 'empty_response' | 'parse_failed' | 'third_party_failed'
+  // 'no_captions' | 'fetch_blocked' | 'parse_failed' | 'third_party_failed'
+  // 'fetch_blocked' means: a caption track existed but the bytes were blocked
+  // or empty (bot-check / session-gated) — NOT that fetching merely failed.
   var failReason = 'no_captions';
+
+  // Live page identity — defeats stale-client bot rejection. Read once from
+  // ytcfg (what YouTube's own player uses); fall back to known-good constants.
+  function ytcfgValue(name) {
+    try {
+      var d = window.ytcfg && window.ytcfg.data_;
+      if (d && d[name]) return d[name];
+    } catch (e) {}
+    return null;
+  }
+  var innertubeKey = ytcfgValue('INNERTUBE_API_KEY') || '';
+  var clientVersion = ytcfgValue('INNERTUBE_CONTEXT_CLIENT_VERSION') || '2.20240101.00.00';
+  var visitorData = ytcfgValue('VISITOR_DATA') || '';
 
   function poll() {
     try {
@@ -35,7 +59,7 @@
     } catch(e) {}
     if (++tries < maxTry) setTimeout(poll, 500);
     else if (!innertubeTried) { innertubeTried = true; tryInnertube(); }
-    else tryThirdParty();
+    else tryTimedtextFallback();
   }
 
   // Prefer manual English, then auto-generated English, then any track.
@@ -53,16 +77,21 @@
     return manual || asr || any;
   }
 
-  // 2nd source: the innertube player API — same-origin POST, returns
-  // caption tracks with freshly signed baseUrls (more reliable than the
-  // page-scraped ytInitialPlayerResponse).
+  // 2nd source: the innertube player API — same-origin POST, returns caption
+  // tracks with freshly signed baseUrls. Send the LIVE key + clientVersion +
+  // visitorData from ytcfg (player-shaped call) so flagged/stale sessions are
+  // far less likely to get the 200-empty bot-check.
   function tryInnertube() {
     failReason = 'fetch_blocked';
+    var url = 'https://www.youtube.com/youtubei/v1/player' +
+      (innertubeKey ? '?key=' + encodeURIComponent(innertubeKey) : '');
+    var ctxClient = { clientName: 'WEB', clientVersion: clientVersion };
+    if (visitorData) ctxClient.visitorData = visitorData;
     var body = JSON.stringify({
       videoId: id,
-      context: { client: { clientName: 'WEB', clientVersion: '2.20240101.00.00' } }
+      context: { client: ctxClient }
     });
-    fetch('https://www.youtube.com/youtubei/v1/player', {
+    fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body
@@ -76,53 +105,78 @@
         }
       } catch(e) {}
       failReason = 'no_captions';
-      tryThirdParty();
-    }).catch(function() { tryThirdParty(); });
+      tryTimedtextFallback();
+    }).catch(function() { tryTimedtextFallback(); });
   }
 
+  // Fetch a caption track URL. Distinguish an EMPTY body (blocked / bot-check:
+  // HTTP 200 with 0 bytes) from a non-empty body that fails to parse.
   function fetchBaseUrl(url) {
     failReason = 'fetch_blocked';
-    fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
-      .then(function(text) {
-        // Empty body = YouTube served NOTHING (the bot-check signature:
-        // HTTP 200 with 0 bytes). That is a block, not a parse error.
-        // One retry guards against a transient empty race; still empty = blocked.
-        if (!text) {
-          setTimeout(function() {
-            fetch(url).then(function(r) { return r.text(); }).then(function(t2) {
-              if (!t2) dispatch(null, 'empty_response');
-              else { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); }
-            }).catch(function() { dispatch(null, 'fetch_blocked'); });
-          }, 800);
-          return;
-        }
-        var result = parseTranscriptResponse(text);
-        if (result) dispatch(result);
-        else {
-          failReason = 'parse_failed';
-          var sep = url.indexOf('?') >= 0 ? '&' : '?';
-          fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
-            .then(function(t2) { if (!t2) dispatch(null, 'empty_response'); else { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, 'parse_failed'); } })
-            .catch(function() { dispatch(null, 'fetch_blocked'); });
-        }
-      }).catch(function() {
-        // Transient failures happen — retry once after 800ms, then fall
-        // back to the innertube source for a freshly signed URL.
-        setTimeout(function() {
-          fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
-            .then(function(text) {
-              var result = parseTranscriptResponse(text);
-              if (result) dispatch(result); else dispatch(null, 'parse_failed');
-            }).catch(function() {
-              if (!innertubeTried) { innertubeTried = true; tryInnertube(); }
-              else dispatch(null, 'fetch_blocked');
-            });
-        }, 800);
-      });
+    fetch(url).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function(text) {
+      if (isEmptyText(text)) {
+        failReason = 'fetch_blocked';          // blocked, not parse failure
+        retryWithFmtJson3(url);
+        return;
+      }
+      var result = parseTranscriptResponse(text);
+      if (result) { dispatch(result); }
+      else {
+        failReason = 'parse_failed';
+        retryWithFmtJson3(url);
+      }
+    }).catch(function() {
+      // Transient failure — retry once after 800ms, then fall back to the
+      // innertube source for a freshly signed URL.
+      setTimeout(function() {
+        fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
+          .then(function(text) {
+            if (isEmptyText(text)) { dispatch(null, 'fetch_blocked'); return; }
+            var result = parseTranscriptResponse(text);
+            if (result) dispatch(result); else dispatch(null, 'parse_failed');
+          }).catch(function() {
+            if (!innertubeTried) { innertubeTried = true; tryInnertube(); }
+            else dispatch(null, 'fetch_blocked');
+          });
+      }, 800);
+    });
+  }
+
+  // Try appending fmt=json3 to a track URL (some tracks only serve parseable
+  // data with it). Never clobber the specific reason recorded above.
+  function retryWithFmtJson3(url) {
+    var sep = url.indexOf('?') >= 0 ? '&' : '?';
+    fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
+      .then(function(t2) {
+        if (isEmptyText(t2)) { dispatch(null, failReason); return; }
+        var r2 = parseTranscriptResponse(t2);
+        if (r2) dispatch(r2); else dispatch(null, failReason);
+      }).catch(function() { dispatch(null, failReason); });
+  }
+
+  // Same-origin last-ditch probe: raw timedtext with the video id. Kept as the
+  // final fallback (innertube signed URL is preferred). youtubetranscript.com is
+  // REMOVED — dead service (returns Merlin AI landing page, never JSON).
+  function tryTimedtextFallback() {
+    failReason = 'third_party_failed';
+    fetch('https://www.youtube.com/api/timedtext?v=' + encodeURIComponent(id) + '&fmt=json3')
+      .then(function(r) { return r.text(); })
+      .then(function(t) {
+        if (isEmptyText(t)) { dispatch(null, 'fetch_blocked'); return; }
+        var r2 = parseTranscriptResponse(t);
+        if (r2) dispatch(r2); else dispatch(null, failReason);
+      }).catch(function() { dispatch(null, failReason); });
+  }
+
+  function isEmptyText(text) {
+    return text === null || text === undefined || String(text).trim() === '';
   }
 
   function parseTranscriptResponse(text) {
-    if (!text) return null;
+    if (isEmptyText(text)) return null;
     try { var d = JSON.parse(text); if (d.events) { var p = []; for (var ei = 0; ei < d.events.length; ei++) { var segs = d.events[ei].segs || []; for (var si = 0; si < segs.length; si++) { if (segs[si].utf8) p.push(segs[si].utf8); } } if (p.length) return p.join(' ').replace(/\s+/g, ' ').trim(); } } catch(e) {}
     try { var xp = new DOMParser(); var xml = xp.parseFromString(text, 'text/xml'); var texts = xml.querySelectorAll('text'); if (texts.length > 0) { var p = []; for (var ti = 0; ti < texts.length; ti++) { if (texts[ti].textContent) p.push(texts[ti].textContent.trim()); } if (p.length) return p.join(' ').replace(/\s+/g, ' ').trim(); } var ps = xml.querySelectorAll('p'); if (ps.length > 0) { var p2 = []; for (var pi = 0; pi < ps.length; pi++) { if (ps[pi].textContent) p2.push(ps[pi].textContent.trim()); } if (p2.length) return p2.join(' ').replace(/\s+/g, ' ').trim(); } } catch(e) {}
     return null;
@@ -136,14 +190,6 @@
       if (t.cues && t.cues.length > 0) { var p = []; for (var j = 0; j < t.cues.length; j++) { if (t.cues[j].text) p.push(t.cues[j].text); } if (p.length) { dispatch(p.join(' ').replace(/\s+/g, ' ').trim()); return true; } }
     }
     return null;
-  }
-
-  // 3rd party stage: youtubetranscript.com is DEAD since 2026-07 (returns
-  // a Merlin AI landing page, not JSON) — removed. Only the bare timedtext
-  // probe remains: it occasionally works when the signed baseUrl fails.
-  function tryThirdParty() {
-    failReason = 'third_party_failed';
-    fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, failReason); }).catch(function() { dispatch(null, failReason); });
   }
 
   function dispatch(text, reason) {
