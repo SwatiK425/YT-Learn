@@ -163,7 +163,7 @@
   // data with it). Never clobber the specific reason recorded above.
   function retryWithFmtJson3(url) {
     var sep = url.indexOf('?') >= 0 ? '&' : '?';
-    fetch(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
+    fetchT(url + sep + 'fmt=json3').then(function(r) { return r.text(); })
       .then(function(t2) {
         if (isEmptyText(t2)) { dispatch(null, failReason); return; }
         var r2 = parseTranscriptResponse(t2);
@@ -176,7 +176,7 @@
   // REMOVED — dead service (returns Merlin AI landing page, never JSON).
   function tryTimedtextFallback() {
     failReason = 'third_party_failed';
-    fetch('https://www.youtube.com/api/timedtext?v=' + encodeURIComponent(id) + '&fmt=json3')
+    fetchT('https://www.youtube.com/api/timedtext?v=' + encodeURIComponent(id) + '&fmt=json3')
       .then(function(r) { return r.text(); })
       .then(function(t) {
         if (isEmptyText(t)) { dispatch(null, 'empty_response'); return; }
