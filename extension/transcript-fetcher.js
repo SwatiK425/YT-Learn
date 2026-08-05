@@ -25,9 +25,9 @@
   var maxTry = 12, tries = 0;   // 12 x 500ms = 6s window on player response
   var innertubeTried = false;   // innertube player API used as 2nd source
   // Reason codes so the extension can tell the user WHAT failed:
-  // 'no_captions' | 'fetch_blocked' | 'parse_failed' | 'third_party_failed'
-  // 'fetch_blocked' means: a caption track existed but the bytes were blocked
-  // or empty (bot-check / session-gated) — NOT that fetching merely failed.
+  // 'no_captions' | 'fetch_blocked' | 'empty_response' | 'parse_failed' | 'third_party_failed'
+  // 'empty_response' = HTTP 200 with 0 bytes (sign-in/anti-bot block).
+  // 'fetch_blocked' = network-level failure fetching a caption track.
   var failReason = 'no_captions';
 
   // Live page identity — defeats stale-client bot rejection. Read once from
@@ -77,6 +77,20 @@
     return manual || asr || any;
   }
 
+  // fetch with an AbortController timeout: a hung request must NOT eat the
+  // whole inject window (18s) — the click fallback in content.js needs room
+  // to run. Resolves with the Response; rejects on timeout/abort/network
+  // error. Falls back to plain fetch where AbortController is unavailable.
+  function fetchT(url, opts, ms) {
+    ms = ms || 8000;
+    var ctrl = ('AbortController' in window) ? new AbortController() : null;
+    var o = opts || {};
+    if (ctrl) o.signal = ctrl.signal;
+    var timer = setTimeout(function() { if (ctrl) ctrl.abort(); }, ms);
+    return fetch(url, o).then(function(r) { clearTimeout(timer); return r; },
+      function(e) { clearTimeout(timer); throw e; });
+  }
+
   // 2nd source: the innertube player API — same-origin POST, returns caption
   // tracks with freshly signed baseUrls. Send the LIVE key + clientVersion +
   // visitorData from ytcfg (player-shaped call) so flagged/stale sessions are
@@ -91,7 +105,7 @@
       videoId: id,
       context: { client: ctxClient }
     });
-    fetch(url, {
+    fetchT(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body
@@ -113,12 +127,12 @@
   // HTTP 200 with 0 bytes) from a non-empty body that fails to parse.
   function fetchBaseUrl(url) {
     failReason = 'fetch_blocked';
-    fetch(url).then(function(r) {
+    fetchT(url).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
     }).then(function(text) {
       if (isEmptyText(text)) {
-        failReason = 'fetch_blocked';          // blocked, not parse failure
+        failReason = 'empty_response';          // anti-bot block, not parse failure
         retryWithFmtJson3(url);
         return;
       }
@@ -132,9 +146,9 @@
       // Transient failure — retry once after 800ms, then fall back to the
       // innertube source for a freshly signed URL.
       setTimeout(function() {
-        fetch(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
+        fetchT(url).then(function(r) { if (!r.ok) throw new Error(); return r.text(); })
           .then(function(text) {
-            if (isEmptyText(text)) { dispatch(null, 'fetch_blocked'); return; }
+            if (isEmptyText(text)) { dispatch(null, 'empty_response'); return; }
             var result = parseTranscriptResponse(text);
             if (result) dispatch(result); else dispatch(null, 'parse_failed');
           }).catch(function() {
@@ -165,7 +179,7 @@
     fetch('https://www.youtube.com/api/timedtext?v=' + encodeURIComponent(id) + '&fmt=json3')
       .then(function(r) { return r.text(); })
       .then(function(t) {
-        if (isEmptyText(t)) { dispatch(null, 'fetch_blocked'); return; }
+        if (isEmptyText(t)) { dispatch(null, 'empty_response'); return; }
         var r2 = parseTranscriptResponse(t);
         if (r2) dispatch(r2); else dispatch(null, failReason);
       }).catch(function() { dispatch(null, failReason); });
