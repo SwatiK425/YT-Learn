@@ -970,6 +970,7 @@ function transcriptErrorMessage() {
   switch (r) {
     case 'no_captions': return 'This video has no captions, so Praxis can\u2019t read it. Try a video with captions enabled.';
     case 'fetch_blocked': return 'YouTube blocked the caption fetch. Click Try Again to retry.';
+    case 'empty_response': return 'YouTube returned an empty caption response (usually a sign-in/anti-bot block). Try Again — or open the video in a signed-in Chrome tab.';
     case 'parse_failed': return 'Captions were found but couldn\u2019t be read. Click Try Again.';
     case 'third_party_failed': return 'No caption source worked. Check your connection and click Try Again.';
     case 'timeout': return 'Fetching captions timed out. Click Try Again.';
