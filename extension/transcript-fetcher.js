@@ -126,13 +126,12 @@
     return null;
   }
 
+  // 3rd party stage: youtubetranscript.com is DEAD since 2026-07 (returns
+  // a Merlin AI landing page, not JSON) — removed. Only the bare timedtext
+  // probe remains: it occasionally works when the signed baseUrl fails.
   function tryThirdParty() {
     failReason = 'third_party_failed';
-    var url = 'https://youtubetranscript.com/?v=' + id + '&format=json';
-    fetch(url).then(function(r) { return r.json(); }).then(function(d) {
-      if (d && d.length) { var p = []; for (var i = 0; i < d.length; i++) { if (d[i].text) p.push(d[i].text); } if (p.length) { dispatch(p.join(' ').replace(/\s+/g, ' ').trim()); return; } }
-      fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, failReason); }).catch(function() { dispatch(null, failReason); });
-    }).catch(function() { dispatch(null, failReason); });
+    fetch('https://www.youtube.com/api/timedtext?v=' + id + '&fmt=json3').then(function(r) { return r.text(); }).then(function(t2) { var r2 = parseTranscriptResponse(t2); if (r2) dispatch(r2); else dispatch(null, failReason); }).catch(function() { dispatch(null, failReason); });
   }
 
   function dispatch(text, reason) {
