@@ -1060,7 +1060,7 @@ async function extractTranscriptByClick() {
   var panel = document.querySelector('ytd-transcript-body-renderer');
   var isOpen = panel && panel.offsetParent !== null;
   if (isOpen) {
-    var segs = panel.querySelectorAll('.segment-text, .segment');
+    var segs = segmentEls(panel);
     if (segs.length > 0) return readSegments(segs);
   }
   var hideBtn = document.querySelector('[aria-label="Hide transcript"]');
@@ -1089,15 +1089,29 @@ async function extractTranscriptByClick() {
   return text || null;
 }
 
+// Collect transcript segment elements ONCE per line. YouTube's DOM nests
+// .segment (whole row incl. timestamp) INSIDE .segment-text (the caption
+// text) — querying both doubles every line (measured 99K vs 46K chars on a
+// 26-min video). Always prefer .segment-text; fall back to .segment only
+// when no .segment-text exists (older UI variants).
+function segmentEls(scope) {
+  var els = scope.querySelectorAll('ytd-transcript-segment-renderer .segment-text');
+  if (els.length > 0) return els;
+  return scope.querySelectorAll('ytd-transcript-segment-renderer .segment');
+}
+
 function readTranscriptSegments() {
-  var segs = document.querySelectorAll('ytd-transcript-segment-renderer .segment-text, ytd-transcript-segment-renderer .segment, .ytd-transcript-segment-renderer .segment-text');
+  var segs = segmentEls(document);
   if (segs.length > 0) return readSegments(segs);
   var raw = document.querySelectorAll('ytd-transcript-segment-renderer');
   if (raw.length > 0) { var p = []; for (var i = 0; i < raw.length; i++) { var t = raw[i].querySelector('.segment-text'); if (t && t.textContent) p.push(t.textContent.trim()); } if (p.length) return p.join(' ').replace(/\s+/g, ' ').trim(); }
   return null;
 }
 
-function readSegments(els) { var p = []; for (var i = 0; i < els.length; i++) { var t = (els[i].textContent || '').trim(); if (t) p.push(t); } return p.length ? p.join(' ').replace(/\s+/g, ' ').trim() : null; }
+// Join segment texts, dropping exact adjacent duplicates (ASR transcripts
+// occasionally re-render the same line twice; the doubling bug also
+// produced adjacent repeats — this is belt-and-braces on top of segmentEls).
+function readSegments(els) { var p = []; var last = ''; for (var i = 0; i < els.length; i++) { var t = (els[i].textContent || '').trim(); if (!t || t === last) continue; p.push(t); last = t; } return p.length ? p.join(' ').replace(/\s+/g, ' ').trim() : null; }
 function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
 function startPrefetch() {
