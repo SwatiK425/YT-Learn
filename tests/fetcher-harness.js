@@ -145,7 +145,7 @@ function lastDispatch(events) {
   console.log('\nScenario 1: player response has tracks, baseUrl serves valid json3');
   {
     const r = await runScenario({
-      playerResponse: { captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      playerResponse: { videoDetails: { videoId: 'TESTVID' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [
         { languageCode: 'en', kind: 'asr', baseUrl: 'https://yt.example/track1' } ] } } },
       respond: (url) => url.indexOf('track1') !== -1
         ? { status: 200, body: JSON3_BODY }
@@ -160,7 +160,7 @@ function lastDispatch(events) {
   console.log('\nScenario 2: baseUrl returns EMPTY body (bot-check signature) -> empty_response');
   {
     const r = await runScenario({
-      playerResponse: { captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      playerResponse: { videoDetails: { videoId: 'TESTVID' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [
         { languageCode: 'en', kind: 'asr', baseUrl: 'https://yt.example/track1' } ] } } },
       respond: () => ({ status: 200, body: '' })  // 200 with 0 bytes, everywhere
     });
@@ -172,7 +172,7 @@ function lastDispatch(events) {
   console.log('\nScenario 3: baseUrl returns unparseable garbage -> parse_failed');
   {
     const r = await runScenario({
-      playerResponse: { captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      playerResponse: { videoDetails: { videoId: 'TESTVID' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [
         { languageCode: 'en', kind: 'asr', baseUrl: 'https://yt.example/track1' } ] } } },
       respond: () => ({ status: 200, body: UNPARSEABLE })
     });
@@ -222,6 +222,32 @@ function lastDispatch(events) {
     });
     const d = lastDispatch(r.dispatchEvents);
     check('final reason is empty_response (empty bodies everywhere)', d && d.reason === 'empty_response', JSON.stringify(d));
+  }
+
+  console.log('\nScenario 7: STALE player response (SPA navigation) must NOT be used');
+  {
+    // window.ytInitialPlayerResponse still holds the PREVIOUS video's data
+    // after in-page navigation (proven live 2026-08-04). The fetcher must
+    // refuse it (videoId mismatch) and go to innertube for the RIGHT video.
+    const r = await runScenario({
+      playerResponse: { videoDetails: { videoId: 'OTHERVID' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+        { languageCode: 'en', kind: 'asr', baseUrl: 'https://yt.example/STALE-track' } ] } } },
+      ytcfg: { INNERTUBE_API_KEY: 'LIVEKEY' },
+      respond: (url) => {
+        if (url.indexOf('youtubei/v1/player') !== -1) return { status: 200, body: PLAYER_WITH_TRACKS };
+        if (url.indexOf('track1') !== -1) return { status: 200, body: JSON3_BODY };
+        return { status: 200, body: JSON3_BODY };
+      }
+    });
+    const d = lastDispatch(r.dispatchEvents);
+    const urls = r.log.map(l => String(l.url));
+    check('refused stale ytInitialPlayerResponse (never fetched STALE-track)',
+      !urls.some(u => u.indexOf('STALE-track') !== -1), JSON.stringify(urls));
+    check('fell through to innertube for the correct video',
+      urls.some(u => u.indexOf('youtubei/v1/player') !== -1), JSON.stringify(urls));
+    check('dispatched the CORRECT video transcript',
+      d && d.text && d.text.indexOf('Hello world') === 0, JSON.stringify(d));
+    check('dispatched with the requested video id', d && d.id === 'TESTVID', JSON.stringify(d));
   }
 
   console.log('\nStatic: dead source removed from chain');
