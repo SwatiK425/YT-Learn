@@ -16,7 +16,10 @@
   color: var(--yt-spec-text-primary, #0f0f0f);
   -webkit-appearance: none;
   appearance: none;
-  margin: 0;
+  /* YouTube's own toolbar spacing: every button after the first gets
+     margin-left: 8px (measured live from #top-level-buttons-computed).
+     Match exactly — not more, not less. */
+  margin: 0 0 0 8px;
 }
 #praxis-btn:hover {
   background: var(--yt-spec-badge-chip-grey-hover, rgba(0,0,0,0.1)) !important;
