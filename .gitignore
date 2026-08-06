@@ -35,3 +35,15 @@ analytics/.trace_offset
 .idea/
 *.swp
 *.swo
+
+# Swati local working files — kept on desktop, never on GitHub
+.claude/
+Pics/
+publishing/
+transcripts/
+bench/
+extension/icons/Screens/
+HANDOFF.md
+PRAXIS.md
+SYSTEM_DESIGN.md
+PROJECT_BIBLE.md
